@@ -383,3 +383,8 @@ select.inp { appearance: none; -webkit-appearance: none; }
 #pubbar.show { transform: translate(-50%, 0); opacity: 1; pointer-events: auto; }
 #pubbar.show.down { transform: translate(-50%, 150%); opacity: 0; pointer-events: none; }
 #pubbar .btn { width: 100%; box-shadow: 0 10px 28px rgba(0,0,0,.38); }
+
+/* тип подарка в карточке: NFT — золотой акцент, обычный — нейтральный */
+.dchip.nft { border-color: rgba(247, 199, 104, .38); }
+.dchip.nft b { color: #f7c768; }
+.dchip.reg b { color: var(--muted); }

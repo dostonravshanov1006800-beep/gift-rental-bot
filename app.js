@@ -311,19 +311,22 @@ function openDetail(g) {
   const mine = String(o.uid) === S.uid;
   const rows = [["Модель", g.m, g.mr], ["Символ", g.s, g.sr], ["Фон", g.b || "", g.br]].filter((r) => r[1]);
   const isNft = g.num != null || !!(g.m || g.s || g.b);
+  // тип подарка: NFT — уникальный (модель/узор/фон/номер/ссылка), обычный — просто эмодзи со звёздами
+  const typeChip = `<div class="dchip ${isNft ? "nft" : "reg"}"><span>Тип</span><b>${isNft ? "Уникальный NFT" : "Обычный подарок"}</b></div>`;
+  const starsChip = !isNft && g.stars ? `<div class="dchip"><span>Звёзды</span><b>${esc(g.stars)} ★</b></div>` : "";
   $("#sheet").innerHTML = `
     <div class="sheet-h"><span>${esc(g.dn || dname(g))}${g.num != null ? " #" + esc(g.num) : ""}</span><button class="sheet-x" id="x">×</button></div>
     <div class="dcanvas" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : "🎁"}</div>
-    <div class="dchips">${rows.map((r) => `<div class="dchip"><span>${r[0]}</span><b>${esc(r[1])}</b>${r[2] ? `<i>${pct(r[2])}</i>` : ""}</div>`).join("")}</div>
+    <div class="dchips">${typeChip}${starsChip}${rows.map((r) => `<div class="dchip"><span>${r[0]}</span><b>${esc(r[1])}</b>${r[2] ? `<i>${pct(r[2])}</i>` : ""}</div>`).join("")}</div>
     <div class="dprice">${g.p ? `${esc(money(g.p))} ${esc(g.cur || "")} <small>/ ${esc(g.per || "")}</small>` : g.stars ? `${esc(g.stars)} <small>★ в профиле</small>` : `<small>Цена по договорённости</small>`}</div>
     <div class="owner"><div class="oav">${esc((o.name || o.uname || "?").slice(0, 1).toUpperCase())}</div><div><b>${esc(o.name || "Арендодатель")}</b><span>${o.uname ? "@" + esc(o.uname) : "ID " + esc(o.uid)}</span></div></div>
     ${mine ? `<div class="hint" style="margin:0 0 10px">Это твой подарок.</div>` : `
     <div class="field"><label>Комментарий (срок, вопросы)</label><input id="oc" maxlength="80" placeholder="Например: на 3 дня"></div>
     <div class="row">
       <button class="btn" id="ord">Заказать аренду</button>
-      ${g.g && isNft ? `<button class="btn out" id="nft">NFT</button>` : ""}
+      ${g.g && isNft ? `<button class="btn out" id="nft">Открыть NFT</button>` : ""}
     </div>`}
-    ${mine && g.g && isNft ? `<button class="btn out" id="nft" style="width:100%">Открыть NFT</button>` : ""}`;
+    ${mine && g.g && isNft ? `<button class="btn out" id="nft" style="width:100%">Открыть NFT в Telegram</button>` : ""}`;
   $("#overlay").hidden = false;
   $("#x").onclick = () => ($("#overlay").hidden = true);
   if ($("#nft")) $("#nft").onclick = () => openTg(`https://t.me/nft/${encodeURIComponent(String(g.g).toLowerCase())}`);
