@@ -766,7 +766,14 @@ const ABOUT_TEXT = `
       4. Все сделки фиксируются: заказ, подтверждение арендодателем, отметка «сдано».<br>
       5. Жалоба на мошенника — команда /block у бота, админ разберётся.</div>
   </div>`;
-function agreed() { try { return !!localStorage.getItem("gr_agree_" + S.uid); } catch (e) { return false; } }
+function agreed() { try { return !!localStorage.getItem("gr_agree_" + S.uid) || !!localStorage.getItem("gr_agree_any"); } catch (e) { return false; } }
+function markAgreed() {
+  const v = String(Date.now());
+  try { localStorage.setItem("gr_agree_" + S.uid, v); localStorage.setItem("gr_agree_any", v); localStorage.setItem("gr_about_seen_" + S.uid, v); } catch (e) {}
+  try { tg && tg.CloudStorage && tg.CloudStorage.setItem("agreed", v); } catch (e) {}
+}
+// восстановить отметку из облака Telegram (если localStorage очистили)
+try { tg && tg.CloudStorage && tg.CloudStorage.getItem("agreed", (e, v) => { if (!e && v) { try { localStorage.setItem("gr_agree_any", v); } catch (x) {} } }); } catch (e) {}
 
 const FAQ_ITEMS = [
   ["Сколько времени занимает публикация подарка?",
@@ -815,7 +822,7 @@ function openAbout() {
   $("#x").onclick = () => ($("#overlay").hidden = true);
   const c = $("#abclose"); if (c) c.onclick = () => ($("#overlay").hidden = true);
   const ab = $("#agreebtn"); if (ab) ab.onclick = () => {
-    try { localStorage.setItem("gr_agree_" + S.uid, String(Date.now())); } catch (e) {}
+    markAgreed();
     haptic("ok"); toast("Спасибо! Условия приняты");
     $("#overlay").hidden = true;
   };
@@ -990,7 +997,7 @@ async function init() {
     try { if (localStorage.getItem("gr_about_seen_" + S.uid)) return; } catch (e) { return; }
     try { localStorage.setItem("gr_about_seen_" + S.uid, String(Date.now())); } catch (e) {}
     openAbout();
-  }, 2500);
+  }, 3000);
   $$(".tab").forEach((b) => b.addEventListener("click", () => { S.viewShowcase = null; S._userTab = b.dataset.tab; setTab(b.dataset.tab); }));
   $("#gadd").onclick = openAddRent;
   $("#pub").onclick = () => publish();
