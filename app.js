@@ -635,14 +635,16 @@ async function recoverProfile() {
 // плавающая кнопка: видна только когда локальное состояние отличается от опубликованного; при скролле вниз прячется
 function drawPubBar() {
   const bar = $("#pubbar"); if (!bar) return;
-  const show = S.tab === "profile" && S.uid !== "0" && wantKey() !== myCatalogKey();
+  const pending = S._pubWant != null && S._pubWant === wantKey();
+  const show = S.tab === "profile" && S.uid !== "0" && wantKey() !== myCatalogKey() && !pending;
+  if (show) bar.classList.remove("down");
   bar.classList.toggle("show", show);
 }
 let _scrY = 0, _scrTmr = 0;
 window.addEventListener("scroll", () => {
   const bar = $("#pubbar"); if (!bar || !bar.classList.contains("show")) return;
   const y = window.scrollY;
-  if (y > _scrY + 6) bar.classList.add("down"); else if (y < _scrY - 6) bar.classList.remove("down");
+  if (Math.abs(y - _scrY) > 4) bar.classList.add("down");
   _scrY = y; clearTimeout(_scrTmr);
   _scrTmr = setTimeout(() => { if (bar) bar.classList.remove("down"); }, 900);
 }, { passive: true });
