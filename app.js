@@ -55,6 +55,17 @@ function rgbHex(n) {
   return "#" + n.toString(16).padStart(6, "0");
 }
 
+function rarityPct(rpm) {
+  if (typeof rpm !== "number" || isNaN(rpm)) return "";
+  return (rpm / 10).toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + "%";
+}
+
+function fmtPrice(v) {
+  const n = parseFloat(String(v).replace(",", "."));
+  if (isNaN(n)) return v;
+  return n.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
+}
+
 function b64urlEncode(str) {
   const bytes = new TextEncoder().encode(str);
   let bin = "";
@@ -213,10 +224,11 @@ const state = {
   uid: "0",
   profile: null,
   terms: null,
-  myGifts: null,     // [{gid, name, uniq, num, model, symbol, cc, ec, th_fuid, ...}]
-  showcase: null,    // витрина из ссылки
+  myGifts: null,     // [{gid, name, num, model, symbol, cc, ec, mr, sr, br, th_fuid}]
+  showcase: null,
   payloadStr: null,
   sig: null,
+  giftSearch: "",
 };
 
 /* ============================================================
@@ -276,6 +288,10 @@ function renderEditor() {
 
     <div class="section">
       <div class="section-title">Мои подарки (реальные, из профиля Telegram)</div>
+      <div id="gifts_stats"></div>
+      <div class="field" id="gifts_search_box" style="margin-bottom:10px">
+        <input type="text" id="giftSearch" placeholder="Поиск: название, модель, символ, №" maxlength="40">
+      </div>
       <div class="gift-list" id="gift_list"></div>
       <div class="hint" id="gifts_status"></div>
     </div>
@@ -288,16 +304,19 @@ function renderEditor() {
     </div>
   `;
 
-  const bind = (id, key, prop) => {
+  const bind = (id, prop) => {
     const el = $("#" + id);
     if (el) el.addEventListener("input", () => { state.profile[prop] = el.value; scheduleSave(CONFIG.storageKey, state.profile); });
   };
-  bind("f_name", null, "display_name");
-  bind("f_about", null, "about");
-  bind("f_username", null, "username");
-  bind("f_sellprice", null, "sell_price");
+  bind("f_name", "display_name");
+  bind("f_about", "about");
+  bind("f_username", "username");
+  bind("f_sellprice", "sell_price");
   const selCur = $("#f_sellcur");
   if (selCur) selCur.addEventListener("change", () => { state.profile.sell_currency = selCur.value; scheduleSave(CONFIG.storageKey, state.profile); });
+
+  const search = $("#giftSearch");
+  if (search) search.addEventListener("input", () => { state.giftSearch = search.value.trim().toLowerCase(); renderMyGifts(); });
 
   renderRequisites();
   renderMyGifts();
@@ -356,16 +375,39 @@ function renderRequisites() {
 }
 
 /* ---------- Мои подарки ---------- */
+function editorStats(gifts) {
+  const all = gifts || [];
+  const active = all.filter((g) => {
+    const t = state.terms[g.gid] || {};
+    return t.av !== false;
+  });
+  let sum = 0, priced = 0;
+  const curCount = {};
+  active.forEach((g) => {
+    const t = state.terms[g.gid] || {};
+    const n = parseFloat(String(t.p || "").replace(",", "."));
+    if (!isNaN(n)) { sum += n; priced++; curCount[t.cur || "UZS"] = (curCount[t.cur || "UZS"] || 0) + 1; }
+  });
+  const mainCur = Object.keys(curCount).sort((a, b) => curCount[b] - curCount[a])[0] || "UZS";
+  return { all: all.length, active: active.length, priced, sum: sum ? fmtPrice(sum) + " " + mainCur : "" };
+}
+
 function renderMyGifts() {
   const list = $("#gift_list");
   const status = $("#gifts_status");
+  const statsBox = $("#gifts_stats");
+  const searchBox = $("#gifts_search_box");
 
   if (state.uid === "0") {
+    if (statsBox) statsBox.innerHTML = "";
+    if (searchBox) searchBox.hidden = true;
     list.innerHTML = `<div class="empty">Открой мини-апп из Telegram, чтобы увидеть свои подарки.</div>`;
     status.textContent = "";
     return;
   }
   if (state.myGifts === "pending") {
+    if (statsBox) statsBox.innerHTML = "";
+    if (searchBox) searchBox.hidden = true;
     list.innerHTML = `<div class="empty">Подарки ещё подтягиваются: нажми /start боту, бот обновляет списки каждые ~10 минут.</div>`;
     status.innerHTML = `<button class="btn ghost" id="btnReloadGifts" style="padding:4px">Обновить</button>`;
     $("#btnReloadGifts").addEventListener("click", async () => {
@@ -375,14 +417,31 @@ function renderMyGifts() {
     return;
   }
   if (!state.myGifts || !state.myGifts.length) {
+    if (statsBox) statsBox.innerHTML = "";
+    if (searchBox) searchBox.hidden = true;
     list.innerHTML = `<div class="empty">Уникальных подарков в профиле не найдено.</div>`;
     status.textContent = "";
     return;
   }
 
-  status.textContent = `${state.myGifts.length} уникальных подарков в профиле. Цена пустая = «по договорённости».`;
+  const st = editorStats(state.myGifts);
+  statsBox.innerHTML = `
+    <div class="stat-bar">
+      <div class="stat"><b>${st.all}</b><span>подарков</span></div>
+      <div class="stat"><b>${st.active}</b><span>на витрине</span></div>
+      <div class="stat"><b>${st.priced}</b><span>с ценой</span></div>
+      ${st.sum ? `<div class="stat"><b>${esc(st.sum)}</b><span>сумма цен</span></div>` : ""}
+    </div>`;
+  searchBox.hidden = false;
 
-  list.innerHTML = state.myGifts.map((g) => {
+  const q = state.giftSearch;
+  const filtered = q ? state.myGifts.filter((g) =>
+    [g.name, g.model, g.symbol, g.uniq, g.num, g.backdrop].some(
+      (v) => v != null && String(v).toLowerCase().includes(q))) : state.myGifts;
+
+  status.textContent = `${state.myGifts.length} уникальных подарков · ${filtered.length} показано · цена пустая = «по договорённости»`;
+
+  list.innerHTML = filtered.map((g) => {
     const t = state.terms[g.gid] || {};
     const av = t.av !== false;
     const thumb = g.th_fuid ? `assets/gifts/${esc(g.th_fuid)}.webp` : "";
@@ -394,7 +453,7 @@ function renderMyGifts() {
         </div>
         <div class="gift-meta">
           <div class="name">${esc(g.name || "Подарок")} #${esc(g.num ?? "")}</div>
-          <div class="sub">${esc(g.model || "")} · ${esc(g.symbol || "")} · ${esc(g.backdrop || "")}</div>
+          <div class="sub">${esc(g.model || "")}${rarityPct(g.mr) ? " · " + rarityPct(g.mr) : ""} · ${esc(g.symbol || "")}</div>
         </div>
         <div class="gift-terms">
           <input type="text" class="gt-price" inputmode="decimal" placeholder="цена" value="${esc(t.p || "")}">
@@ -413,6 +472,15 @@ function renderMyGifts() {
       const t = state.terms[gid] || (state.terms[gid] = {});
       t[prop] = val;
       scheduleSave(CONFIG.termsKey, state.terms);
+      const st2 = editorStats(state.myGifts);
+      const sb = $("#gifts_stats");
+      if (sb) sb.innerHTML = `
+        <div class="stat-bar">
+          <div class="stat"><b>${st2.all}</b><span>подарков</span></div>
+          <div class="stat"><b>${st2.active}</b><span>на витрине</span></div>
+          <div class="stat"><b>${st2.priced}</b><span>с ценой</span></div>
+          ${st2.sum ? `<div class="stat"><b>${esc(st2.sum)}</b><span>сумма цен</span></div>` : ""}
+        </div>`;
     };
     row.querySelector(".gt-price").addEventListener("input", (e) => setTerm("p", e.target.value));
     row.querySelector(".gt-cur").addEventListener("change", (e) => setTerm("cur", e.target.value));
@@ -440,6 +508,9 @@ function buildShowcaseObject() {
         num: g.num,
         cc: g.cc,
         ec: g.ec,
+        mr: g.mr,
+        sr: g.sr,
+        br: g.br,
         t: g.th_fuid ? `assets/gifts/${g.th_fuid}.webp` : "",
         p: t.p || "",
         cur: t.cur || "UZS",
@@ -498,14 +569,15 @@ function renderStorefront() {
       ${p.about ? `<div class="about">${esc(p.about)}</div>` : ""}
       ${p.sell ? `
         <div class="collection-price">
-          <span class="val">${esc(p.sell)}</span>
+          <span class="val">${esc(fmtPrice(p.sell))}</span>
           <span class="cur">${esc(p.cur || "")} · вся коллекция</span>
         </div>` : ""}
     </div>
 
     <div class="section">
+      <div class="section-title">Подарки · ${gifts.length}</div>
       <div class="grid">
-        ${gifts.map(renderGiftCard).join("")}
+        ${gifts.map((g, i) => renderGiftCard(g, i)).join("")}
       </div>
     </div>
 
@@ -549,6 +621,9 @@ function renderStorefront() {
       if (ok) haptic("success");
     }));
 
+  document.querySelectorAll(".gift-card").forEach((el) =>
+    el.addEventListener("click", () => openGiftDetail(+el.dataset.idx)));
+
   const contact = $("#btnContact");
   if (contact) contact.addEventListener("click", () => openTg(`https://t.me/${encodeURIComponent(p.uname)}`));
 
@@ -561,13 +636,14 @@ function renderStorefront() {
   securityPass();
 }
 
-function renderGiftCard(g) {
+function renderGiftCard(g, idx) {
   const c1 = rgbHex(g.cc) || "#5aa7e0";
   const c2 = rgbHex(g.ec) || "#2b3f66";
-  const price = g.p ? `${esc(g.p)} ${esc(g.cur || "")} <span class="sub">/ ${esc(g.per || "")}</span>`
-                    : `<span class="sub">по договорённости</span>`;
+  const price = g.p
+    ? `${esc(fmtPrice(g.p))} ${esc(g.cur || "")} <span class="sub">/ ${esc(g.per || "")}</span>`
+    : `<span class="sub">по договорённости</span>`;
   return `
-    <div class="gift-card">
+    <div class="gift-card" data-idx="${idx}">
       <div class="gc-canvas" style="--c1:${c1};--c2:${c2}">
         ${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : "🎁"}
         <div class="gc-num">#${esc(g.num ?? "")}</div>
@@ -579,6 +655,63 @@ function renderGiftCard(g) {
       </div>
     </div>
   `;
+}
+
+/* ---------- Детальный просмотр подарка ---------- */
+function openGiftDetail(idx) {
+  const g = (state.showcase.gifts || [])[idx];
+  if (!g) return;
+  haptic("light");
+
+  const c1 = rgbHex(g.cc) || "#5aa7e0";
+  const c2 = rgbHex(g.ec) || "#2b3f66";
+  const chips = [
+    ["Модель", g.m, g.mr],
+    ["Символ", g.s, g.sr],
+    ["Фон", null, g.br],
+  ].filter(([, label]) => label !== null);
+
+  const sheet = $("#sheet");
+  sheet.innerHTML = `
+    <div class="sheet-title">
+      <span>${esc(g.n || g.g || "Подарок")} · #${esc(g.num ?? "")}</span>
+      <button class="sheet-close" id="detailClose">×</button>
+    </div>
+    <div class="detail-canvas" style="--c1:${c1};--c2:${c2}">
+      ${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : "🎁"}
+      <div class="gc-num">#${esc(g.num ?? "")}</div>
+    </div>
+    <div class="detail-name">${esc(g.n || g.g || "Подарок")}</div>
+    <div class="detail-chips">
+      ${chips.map(([label, val, rar]) => `
+        <div class="dchip">
+          <span>${label}</span>
+          <b>${esc(val || "—")}</b>
+          ${rar ? `<i>${rarityPct(rar)}</i>` : ""}
+        </div>`).join("")}
+    </div>
+    <div class="detail-price">
+      ${g.p ? `${esc(fmtPrice(g.p))} ${esc(g.cur || "")} <span class="sub">/ ${esc(g.per || "")}</span>`
+             : "Цена по договорённости"}
+    </div>
+    <div class="fab-row">
+      <button class="btn secondary" id="detailNft">Ссылка на NFT</button>
+      ${state.showcase.uname ? `<button class="btn" id="detailWrite">Написать владельцу</button>` : ""}
+    </div>
+    <div class="hint" style="text-align:center; margin-top:8px">
+      Подарок и атрибуты сверены с профилем Telegram при верификации витрины.
+    </div>
+  `;
+  $("#overlay").hidden = false;
+
+  $("#detailClose").addEventListener("click", () => { $("#overlay").hidden = true; });
+  $("#detailNft").addEventListener("click", async () => {
+    if (!g.g) { toast("Имя подарка недоступно"); return; }
+    const url = `https://t.me/nft/${encodeURIComponent(String(g.g).toLowerCase())}`;
+    openTg(url);
+  });
+  const w = $("#detailWrite");
+  if (w) w.addEventListener("click", () => openTg(`https://t.me/${encodeURIComponent(state.showcase.uname)}`));
 }
 
 /* ---------- Проверка безопасности ---------- */

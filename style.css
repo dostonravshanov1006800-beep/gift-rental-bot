@@ -192,3 +192,35 @@ textarea { min-height: 64px; resize: vertical; }
   width: min(528px, calc(100% - 32px)); z-index: 40;
 }
 .fab-row { display: flex; flex-direction: column; gap: 8px; }
+
+/* ---------- Статистика (редактор) ---------- */
+.stat-bar {
+  display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;
+}
+.stat {
+  flex: 1; min-width: 76px; background: var(--card); border-radius: 12px;
+  padding: 8px 10px; text-align: center;
+}
+.stat b { display: block; font-size: 15px; }
+.stat span { font-size: 11px; color: var(--muted); }
+
+/* ---------- Детальный просмотр подарка ---------- */
+.detail-canvas {
+  aspect-ratio: 1/1; max-width: 280px; margin: 0 auto; border-radius: 18px;
+  display: flex; align-items: center; justify-content: center; position: relative;
+  background: radial-gradient(circle at 50% 42%, var(--c1, #5aa7e0) 0%, var(--c2, #2b3f66) 100%);
+}
+.detail-canvas img { width: 58%; height: 58%; object-fit: contain; filter: drop-shadow(0 6px 16px rgba(0,0,0,0.35)); }
+.detail-name { text-align: center; font-size: 17px; font-weight: 700; margin-top: 14px; }
+
+.detail-chips { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.dchip {
+  display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+  background: var(--bg); border-radius: 10px;
+}
+.dchip span { font-size: 12px; color: var(--muted); flex: 0 0 64px; }
+.dchip b { flex: 1; font-size: 13px; }
+.dchip i { font-style: normal; font-size: 12px; font-weight: 700; color: var(--btn); }
+
+.detail-price { text-align: center; font-size: 16px; font-weight: 700; color: var(--btn); margin: 12px 0 14px; }
+.detail-price .sub { color: var(--muted); font-weight: 400; font-size: 13px; }
