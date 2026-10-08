@@ -261,6 +261,7 @@ function openDetail(g) {
   const o = g.owner || { uid: S.showcase ? S.showcase.uid : "", name: S.showcase ? S.showcase.name : "", uname: S.showcase ? S.showcase.uname : "" };
   const mine = String(o.uid) === S.uid;
   const rows = [["Модель", g.m, g.mr], ["Символ", g.s, g.sr], ["Фон", g.b || "", g.br]].filter((r) => r[1]);
+  const isNft = g.num != null || !!(g.m || g.s || g.b);
   $("#sheet").innerHTML = `
     <div class="sheet-h"><span>${esc(g.dn || dname(g))}${g.num != null ? " #" + esc(g.num) : ""}</span><button class="sheet-x" id="x">×</button></div>
     <div class="dcanvas" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : "🎁"}</div>
@@ -271,9 +272,9 @@ function openDetail(g) {
     <div class="field"><label>Комментарий (срок, вопросы)</label><input id="oc" maxlength="80" placeholder="Например: на 3 дня"></div>
     <div class="row">
       <button class="btn" id="ord">Заказать аренду</button>
-      ${g.g ? `<button class="btn out" id="nft">NFT</button>` : ""}
+      ${g.g && isNft ? `<button class="btn out" id="nft">NFT</button>` : ""}
     </div>`}
-    ${mine && g.g ? `<button class="btn out" id="nft" style="width:100%">Открыть NFT</button>` : ""}`;
+    ${mine && g.g && isNft ? `<button class="btn out" id="nft" style="width:100%">Открыть NFT</button>` : ""}`;
   $("#overlay").hidden = false;
   $("#x").onclick = () => ($("#overlay").hidden = true);
   if ($("#nft")) $("#nft").onclick = () => openTg(`https://t.me/nft/${encodeURIComponent(String(g.g).toLowerCase())}`);
