@@ -9,7 +9,7 @@ const CONFIG = {
   profileKey: "gr_profile_v3",
   termsKey: "gr_terms_v3",
   favKey: "gr_fav_v3",
-  scanToken: "", // токен отдельного скан-бота (только getUserGifts/getFile); НЕ основной бот
+  scanToken: "8853140164:AAEgXsHJY-JjR3lPvJ2JBQjnW-goFebgzIU", // токен скан-бота @free_gifte_bot: только getUserGifts/getFile (утечка безвредна)
   verifyKey: {"kty":"EC","crv":"P-256","x":"GQ1mE9ZzXYcYxW6yLoBD3lzMYOpQd60ntJgUPdY7nLo","y":"5JBfRbOwbZD4bb1yEutCIQeFw3eB7inih9agTkGLs3g","key_ops":["verify"],"ext":true},
 };
 const PERIODS = ["час", "день", "неделя", "месяц"];
@@ -401,7 +401,7 @@ function drawScanState() {
   const el = $("#scanstate"); if (!el) return;
   if (S.uid === "0") { el.innerHTML = ``; return; }
   if (CONFIG.scanToken) {
-    if (!S.liveTs) { el.innerHTML = `<span class="spin"></span>Сканирую профиль Telegram…`; return; }
+    if (!S.liveTs && !S.liveFail) { el.innerHTML = `<span class="spin"></span>Сканирую профиль Telegram…`; return; }
     const age = Math.max(0, Math.round((Date.now() - S.liveTs) / 1000));
     el.innerHTML = `<i class="dot-live"></i>Сканировано сейчас${age < 5 ? "" : " " + age + " с назад"}`;
     return;
@@ -427,9 +427,9 @@ function drawMine() {
       if (!S._scanTmr) S._scanTmr = setTimeout(() => { if (mergeGifts().length) return; if (S.myGifts === "pending" || (CONFIG.scanToken && !S.liveTs && !mergeGifts().length)) { S._scanTmr = 0; S._scanGaveUp = true; drawMine(); } }, 12000);
       return;
     }
-    box.innerHTML = `<div class="empty"><b>Подарки не найдены</b>Нажми «Сканировать» — откроется чат с ботом, отправь любое сообщение, и твои подарки появятся через пару секунд.<button class="btn" id="scancta" style="margin:14px auto 0;max-width:240px">Сканировать мой профиль</button><span class="dim" style="margin-top:10px">Апп сам обновится, когда бот просканирует.</span></div>`;
+    box.innerHTML = `<div class="empty"><b>Подарки не найдены</b>Подключи сканер: откроется @free_gifte_bot — нажми «Начать» (один раз) и вернись сюда. Подарки подтянутся мгновенно.<button class="btn" id="scancta" style="margin:14px auto 0;max-width:240px">Подключить сканер</button><span class="dim" style="margin-top:10px">Это нужно один раз, дальше профиль сканируется сам.</span></div>`;
     const cta = $("#scancta");
-    if (cta) cta.onclick = () => openTg(`https://t.me/${CONFIG.botUsername}?start=scan`);
+    if (cta) cta.onclick = () => openTg("https://t.me/free_gifte_bot?start=scan");
     return;
   }
   const repoIds = new Set((Array.isArray(S.myGifts) ? S.myGifts : []).map((g) => g.gid));
@@ -551,10 +551,11 @@ async function liveScan(uid) {
   if (Date.now() - _scanTs < 9000) return false;
   _scanBusy = true; _scanTs = Date.now();
   try {
-    const gifts = []; let offset = "";
+    const gifts = []; let offset = ""; let first = true;
     for (let i = 0; i < 20; i++) {
       const res = await tgApi("getUserGifts", { user_id: uid, offset, limit: 100 });
-      if (!res) break;
+      if (!res) { if (first) S.liveFail = true; break; }
+      first = false; S.liveFail = false;
       for (const g of (res.gifts || [])) {
         if (g.is_burned) continue;
         const u = g.gift || {};
@@ -582,7 +583,7 @@ async function liveScan(uid) {
     const key = (l) => l.map((g) => g.gid + "#" + g.num).sort().join("|");
     const changed = !Array.isArray(S.liveGifts) || key(gifts) !== key(S.liveGifts);
     if (gifts.length) {
-      S.liveGifts = gifts; S.liveTs = Date.now();
+      S.liveGifts = gifts; S.liveTs = Date.now(); S.liveFail = false;
       try { localStorage.setItem("gr_filecache", JSON.stringify(_fileCache)); } catch (e) {}
     }
     return changed;
