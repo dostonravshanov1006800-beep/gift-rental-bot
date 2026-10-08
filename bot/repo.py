@@ -109,7 +109,7 @@ class Repo:
             # ref
             async with self._sem:
                 async with session.patch(
-                    f"{self.api}/repos/{self.repo}/git/ref/heads/main",
+                    f"{self.api}/repos/{self.repo}/git/refs/heads/main",
                     headers=self._headers(),
                     json={"sha": commit["sha"], "force": False},
                 ) as r:

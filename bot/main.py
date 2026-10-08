@@ -130,7 +130,7 @@ async def download_thumb(session, file_id) -> bytes | None:
     path = data["result"].get("file_path")
     if not path:
         return None
-    async with session.get(f"{API}/file/{path}") as r:
+    async with session.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{path}") as r:
         if r.status == 200:
             return await r.read()
     return None
