@@ -24,6 +24,10 @@ if (tg) {
  * ============================================================ */
 const $ = (s, r) => (r || document).querySelector(s);
 const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+// эмодзи из имён подарков вычищаем на чтении: у regular-подарков оно дублирует стикер
+const EMO = /[\p{Extended_Pictographic}\uFE0F\u200D]/gu;
+const gname = (v) => String(v || "").replace(EMO, "").trim();
+
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 let toastT = null;
@@ -141,7 +145,7 @@ function card(g, i) {
       <button class="gheart ${fav ? "on" : ""}" data-fav="${i}" aria-label="В избранное"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.600-7 10-7 10z"/></svg></button>
     </div>
     <div class="ginfo">
-      <div class="gname">${esc(g.n || "Подарок")}</div>
+      <div class="gname">${esc(gname(g.n) || "Подарок")}</div>
       <div class="gattr">${esc(g.m || "")}${g.s ? " · " + esc(g.s) : ""}</div>
       ${price}
     </div>
@@ -224,7 +228,7 @@ function openDetail(g) {
   const mine = String(o.uid) === S.uid;
   const rows = [["Модель", g.m, g.mr], ["Символ", g.s, g.sr], ["Фон", g.b || "", g.br]].filter((r) => r[1]);
   $("#sheet").innerHTML = `
-    <div class="sheet-h"><span>${esc(g.n || "Подарок")}${g.num != null ? " #" + esc(g.num) : ""}</span><button class="sheet-x" id="x">×</button></div>
+    <div class="sheet-h"><span>${esc(gname(g.n) || "Подарок")}${g.num != null ? " #" + esc(g.num) : ""}</span><button class="sheet-x" id="x">×</button></div>
     <div class="dcanvas" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : "🎁"}</div>
     <div class="dchips">${rows.map((r) => `<div class="dchip"><span>${r[0]}</span><b>${esc(r[1])}</b>${r[2] ? `<i>${pct(r[2])}</i>` : ""}</div>`).join("")}</div>
     <div class="dprice">${g.p ? `${esc(money(g.p))} ${esc(g.cur || "")} <small>/ ${esc(g.per || "")}</small>` : `<small>Цена по договорённости</small>`}</div>
@@ -345,7 +349,7 @@ function drawMine() {
     const c1 = hex(g.cc) || "#5aa7e0", c2 = hex(g.ec) || "#2b3f66";
     return `<div class="lrow" data-g="${esc(g.gid)}">
       <div class="lthumb" style="--c1:${c1};--c2:${c2}">${g.th_fuid ? `<img src="assets/gifts/${esc(g.th_fuid)}.webp" alt="" onerror="this.remove()">` : "🎁"}</div>
-      <div class="lmeta"><b>${esc(g.name || "")}${g.num != null ? " #" + esc(g.num) : ""}</b><span>${esc(g.model || "")}${g.mr ? " · " + pct(g.mr) : ""}</span></div>
+      <div class="lmeta"><b>${esc(gname(g.name) || "Подарок")}${g.num != null ? " #" + esc(g.num) : ""}</b><span>${esc(g.model || (g.stars ? g.stars + " ★" : ""))}${g.mr ? " · " + pct(g.mr) : ""}</span></div>
       <label class="switch"><input type="checkbox" ${t.on ? "checked" : ""}><i></i></label>
     </div>
     <div class="pform" data-pf="${esc(g.gid)}" ${t.on ? "" : "hidden"} style="padding:0 14px 12px;border-bottom:1px solid var(--line)">

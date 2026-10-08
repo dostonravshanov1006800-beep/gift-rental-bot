@@ -83,7 +83,7 @@ async def fetch_user_gifts(session, user_id) -> list[dict]:
                 thumb = st.get("thumbnail", {}) or {}
                 gifts.append({
                     "gid": u.get("id") or "",
-                    "name": st.get("emoji") or u.get("title") or "Подарок",
+                    "name": u.get("title") or "",
                     "uniq": "", "num": None,
                     "model": "", "symbol": "", "backdrop": "",
                     "cc": None, "ec": None, "mr": None, "sr": None, "br": None,
