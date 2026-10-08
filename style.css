@@ -308,7 +308,7 @@ select.inp { appearance: none; -webkit-appearance: none; }
   position: fixed; left: 50%; bottom: calc(var(--tabh) + 22px + env(safe-area-inset-bottom)); transform: translateX(-50%);
   background: rgba(34, 38, 50, .94); backdrop-filter: blur(14px); border: 1px solid var(--line-strong);
   border-radius: 14px; padding: 11px 18px; font-size: 13.5px; font-weight: 550; z-index: 100; max-width: 88%; text-align: center;
-  box-shadow: 0 12px 32px rgba(0,0,0,.5); animation: toastIn .4s var(--spring);
+  box-shadow: 0 12px 32px rgba(0,0,0,.5); animation: toastIn .4s var(--spring); pointer-events: none;
 }
 @keyframes toastIn { from { opacity: 0; transform: translate(-50%, 14px) scale(.96) } to { opacity: 1; transform: translate(-50%, 0) } }
 
@@ -375,3 +375,11 @@ select.inp { appearance: none; -webkit-appearance: none; }
 .unl:active { transform: scale(.95); }
 .lmeta { min-width: 0; flex: 1; }
 .lmeta b, .lmeta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+
+/* плавающая кнопка публикации: выезжает снизу только когда есть непубликованные изменения */
+#pubbar { position: fixed; left: 50%; bottom: calc(var(--tabh) + 14px + env(safe-area-inset-bottom)); z-index: 40;
+  width: min(92vw, 524px); transform: translate(-50%, 150%); opacity: 0; pointer-events: none;
+  transition: transform .34s var(--spring), opacity .18s ease; }
+#pubbar.show { transform: translate(-50%, 0); opacity: 1; pointer-events: auto; }
+#pubbar.show.down { transform: translate(-50%, 150%); opacity: 0; pointer-events: none; }
+#pubbar .btn { width: 100%; box-shadow: 0 10px 28px rgba(0,0,0,.38); }

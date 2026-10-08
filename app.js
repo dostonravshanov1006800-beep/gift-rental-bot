@@ -205,6 +205,7 @@ function setTab(t) {
   render();
   window.scrollTo(0, 0);
   const fab = $("#gadd"); if (fab) fab.hidden = !(t === "market" && !S.viewShowcase);
+  drawPubBar();
 }
 function render() {
   if (S.showcase && S.tab === "market" && S.viewShowcase) return renderShowcase();
@@ -384,7 +385,7 @@ async function startLiveScan() {
   const changed = await liveScan(S.uid);
   if (S.tab === "profile") { if (changed) renderProfile(); else drawScanState(); }
 }
-setInterval(() => { if (!document.hidden && S.tab === "profile") startLiveScan(); }, 15000);
+setInterval(() => { if (!document.hidden && S.tab === "profile") startLiveScan(); }, 5000);
 
 function renderProfile() {
   const u = S.user || {};
@@ -415,8 +416,7 @@ function renderProfile() {
     <div class="section-title">Сдать подарок в аренду</div>
     <div class="scanstate" id="scanstate"></div>
     <div id="mine"></div>
-    <div class="hint">Включи переключатель, укажи цену и срок. Бот сверит подарки с твоим профилем, публикация мгновенная.</div>
-    <div class="btnrow"><button class="btn" id="pub">Опубликовать</button></div>`;
+    <div class="hint">Включи переключатель, укажи цену и срок. Бот сверит подарки с твоим профилем, публикация мгновенная.</div>`;
   $("#cid").onclick = async () => {
     if (S.uid === "0") { const ok = await applyTgUser(); if (!ok) { toast("Открываю бота для входа…"); setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}?start=login`), 400); } return; }
     await copy(S.uid); haptic("ok"); toast("ID скопирован");
@@ -424,7 +424,6 @@ function renderProfile() {
   startLiveScan();
   $("#edit").onclick = openEdit;
   $("#share").onclick = shareShowcase;
-  $("#pub").onclick = publish;
   drawReq(); drawMine();
 }
 
@@ -439,6 +438,10 @@ function drawReq() {
   $$("[data-rd]", box).forEach((e) => e.onclick = () => { S.profile.req.splice(+e.dataset.rd, 1); sv(); drawReq(); });
   $("#radd").onclick = () => { S.profile.req.push({ l: "", v: "" }); sv(); drawReq(); };
 }
+
+// сканер: спросили один раз -> флаг по uid, больше никогда не спрашиваем
+function scanAsked() { try { return localStorage.getItem("gr_scanask_v1") === S.uid; } catch (e) { return false; } }
+function markScanAsked() { try { localStorage.setItem("gr_scanask_v1", S.uid); } catch (e) {} }
 
 function drawScanState() {
   const el = $("#scanstate"); if (!el) return;
@@ -478,9 +481,11 @@ function drawMine() {
     const fresh = S.myGiftsUpd && (Date.now() / 1000 - S.myGiftsUpd) < 120;
     box.innerHTML = fresh
       ? `<div class="empty"><b>В профиле Telegram нет подарков</b>Бот проверил твой профиль только что: подарков нет. Получишь подарок, он появится здесь сам через пару секунд.<span class="hint">Скрыты подарки? Открой Telegram → Профиль → Подарки и сделай их видимыми.</span></div>`
-      : `<div class="empty"><b>Подарки не найдены</b>Нажми «Начать» в боте: он сразу отсканирует профиль, подарки появятся здесь сами.<button class="btn" id="scancta">Открыть бота и сканировать</button></div>`;
+      : scanAsked() || S.liveTs
+        ? `<div class="empty"><b>Подарки не найдены</b>Профиль подключён и синхронизируется автоматически: как только в Telegram появится подарок, он возникнет здесь сам.</div>`
+        : `<div class="empty"><b>Подключи сканер один раз</b>Это нужно сделать единожды: дальше профиль обновляется сам, без вопросов.<button class="btn" id="scancta">Подключить (1 раз)</button></div>`;
     const cta = $("#scancta");
-    if (cta) cta.onclick = () => openTg(`https://t.me/${CONFIG.botUsername}?start=scan`);
+    if (cta) cta.onclick = () => { markScanAsked(); openTg(`https://t.me/${CONFIG.botUsername}?start=scan`); };
     return;
   }
   const repoIds = new Set((Array.isArray(S.myGifts) ? S.myGifts : []).map((g) => g.gid));
@@ -524,11 +529,12 @@ function drawMine() {
     const gid = row.dataset.g; const pf = $(`[data-pf="${CSS.escape(gid)}"]`, box);
     const t = () => (S.terms[gid] = S.terms[gid] || {});
     $(".lmeta", row).onclick = async () => { const g = list.find((x) => x.gid === gid); if (g) openMyGiftDetail(g, repoIds.has(gid)); };
-    $("input[type=checkbox]", row).onchange = (e) => { t().on = e.target.checked; pf.hidden = !e.target.checked; save(CONFIG.termsKey, S.terms); haptic(); };
-    $("[data-p]", pf).oninput = (e) => { t().p = e.target.value; save(CONFIG.termsKey, S.terms); };
-    $("[data-c]", pf).onchange = (e) => { t().cur = e.target.value; save(CONFIG.termsKey, S.terms); };
-    $("[data-r]", pf).onchange = (e) => { t().per = e.target.value; save(CONFIG.termsKey, S.terms); };
+    $("input[type=checkbox]", row).onchange = (e) => { t().on = e.target.checked; pf.hidden = !e.target.checked; save(CONFIG.termsKey, S.terms); haptic(); drawPubBar(); };
+    $("[data-p]", pf).oninput = (e) => { t().p = e.target.value; save(CONFIG.termsKey, S.terms); drawPubBar(); };
+    $("[data-c]", pf).onchange = (e) => { t().cur = e.target.value; save(CONFIG.termsKey, S.terms); drawPubBar(); };
+    $("[data-r]", pf).onchange = (e) => { t().per = e.target.value; save(CONFIG.termsKey, S.terms); drawPubBar(); };
   });
+  drawPubBar();
 }
 
 async function openMyGiftDetail(g, fromRepo) {
@@ -594,17 +600,59 @@ function maybeAutoPublish() {
 function confirmPublished() {
   if (!S._pubWant && S._pubWant !== "") return;
   if (myCatalogKey() !== S._pubWant) return;
-  S._pubWant = null; haptic("ok"); clearPubIntent();
+  S._pubWant = null; haptic("ok"); clearPubIntent(); drawPubBar();
   toast(S._pubWasEmpty ? "Снято с аренды" : "Опубликовано в каталоге");
   const btn = $("#pub"); if (btn) btn.classList.remove("busy");
 }
 const _canSendData = () => !!(tg && typeof tg.sendData === "function");
 function myCatalogKey() { return (S.catalog || []).filter((g) => g.owner && String(g.owner.uid) === S.uid).map((g) => g.g + ":" + g.p + g.cur + g.per).sort().join("|"); }
+function wantKey() { return buildListing().gifts.map((g) => g.g + ":" + g.p + g.cur + g.per).sort().join("|"); }
+// локальные данные слетели (новое устройство, чистый storage): восстанавливаем цены и статусы из каталога по uid
+function recoverTerms() {
+  const mine = (S.catalog || []).filter((g) => g.owner && String(g.owner.uid) === S.uid);
+  if (mine.length && !Object.keys(S.terms || {}).length) {
+    for (const g of mine) S.terms[g.g] = { on: true, p: g.p, cur: g.cur, per: g.per };
+    save(CONFIG.termsKey, S.terms);
+    toast("Данные восстановлены из каталога");
+  }
+}
+// профиль (реквизиты, имя) — из листинга юзера в репо
+async function recoverProfile() {
+  const pristine = !S.profile.name && !S.profile.about && !(S.profile.req || []).some((r) => r.v);
+  if (!pristine) return;
+  try {
+    const l = await getJSON("data/listings/" + S.uid + ".json");
+    if (l && l.req) {
+      S.profile = { ...S.profile, name: l.name || S.profile.name, uname: l.uname || S.profile.uname,
+        about: l.about || S.profile.about, req: (l.req || []).filter((r) => r && r.v) };
+      save(CONFIG.profileKey, S.profile);
+    }
+  } catch (e) {}
+}
+// плавающая кнопка: видна только когда локальное состояние отличается от опубликованного; при скролле вниз прячется
+function drawPubBar() {
+  const bar = $("#pubbar"); if (!bar) return;
+  const show = S.tab === "profile" && S.uid !== "0" && wantKey() !== myCatalogKey();
+  bar.classList.toggle("show", show);
+}
+let _scrY = 0, _scrTmr = 0;
+window.addEventListener("scroll", () => {
+  const bar = $("#pubbar"); if (!bar || !bar.classList.contains("show")) return;
+  const y = window.scrollY;
+  if (y > _scrY + 6) bar.classList.add("down"); else if (y < _scrY - 6) bar.classList.remove("down");
+  _scrY = y; clearTimeout(_scrTmr);
+  _scrTmr = setTimeout(() => { if (bar) bar.classList.remove("down"); }, 900);
+}, { passive: true });
 
 async function publish(force) {
   const obj = buildListing();
   const wasListed = (S.catalog || []).some((g) => g.owner && String(g.owner.uid) === S.uid);
   if (!obj.gifts.length && !wasListed && !force) return toast("Включи хотя бы один подарок");
+  // идемпотентность: локальное состояние совпадает с опубликованным -> повтор не нужен, бот не дёргаем
+  if (!force) {
+    const wantNow = obj.gifts.map((g) => g.g + ":" + g.p + g.cur + g.per).sort().join("|");
+    if (wantNow === myCatalogKey()) { haptic(); toast("Уже опубликовано"); clearPubIntent(); return; }
+  }
   const raw = JSON.stringify(obj);
   const btn = $("#pub");
   const want = obj.gifts.map((g) => g.g + ":" + g.p + g.cur + g.per).sort().join("|");
@@ -673,7 +721,7 @@ async function tgApi(method, params) {
 
 async function liveScan(uid) {
   if (!CONFIG.scanToken || uid === "0" || _scanBusy) return false;
-  if (Date.now() - _scanTs < 9000) return false;
+  if (Date.now() - _scanTs < 4000) return false;
   _scanBusy = true; _scanTs = Date.now();
   try {
     const gifts = []; let offset = ""; let first = true;
@@ -809,8 +857,9 @@ async function init() {
   }
   // и дальше проверяем в фоне (если вебвью отдаст initData позже)
   setInterval(() => { if (S.uid === "0") applyTgUser(); }, 1500);
-  $$(".tab").forEach((b) => b.addEventListener("click", () => { S.viewShowcase = null; setTab(b.dataset.tab); }));
+  $$(".tab").forEach((b) => b.addEventListener("click", () => { S.viewShowcase = null; S._userTab = b.dataset.tab; setTab(b.dataset.tab); }));
   $("#gadd").onclick = openAddRent;
+  $("#pub").onclick = () => publish();
   const sp = tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param;
   if (sp && sp.startsWith("u_")) S.viewShowcase = sp.slice(2);
 
@@ -819,10 +868,12 @@ async function init() {
   if (p) S.profile = { ...S.profile, ...p };
   S.terms = t || {}; S.fav = f || {};
   S.showcase = S.viewShowcase ? { uid: S.viewShowcase } : null;
-  setTab(_pubMode ? "profile" : "market");
+  if (!S._userTab) setTab(_pubMode ? "profile" : "market");  // не перетираем таб, выбранный юзером во время загрузки
   await Promise.all([loadCatalog(), loadMine(), loadOrders()]);
+  recoverTerms();
   render();
   maybeAutoPublish();
+  await recoverProfile(); if (S.tab === "profile") render();
   autoPollMine();
 }
 
@@ -832,7 +883,17 @@ function autoPollMine() {
     if (document.hidden) return;
     // каталог: кто-то опубликовал/сменил цену -> обновляем ленту
     const c = await getJSON("data/catalog.json");
-    const items = c && c !== "404" ? c.items || [] : [];
+    let items = c && c !== "404" ? c.items || [] : [];
+    // публикация в полёте (бот коммитит ~5-10с): не затираем свои оптимистичные записи репо-версией, где их ещё нет
+    const pendingPub = S._pubWant != null && S._pubAt && Date.now() - S._pubAt < 25000;
+    if (pendingPub) {
+      const repoMine = items.filter((x) => x.owner && String(x.owner.uid) === S.uid)
+        .map((g) => g.g + ":" + g.p + g.cur + g.per).sort().join("|");
+      if (repoMine !== S._pubWant) {
+        items = items.filter((x) => !(x.owner && String(x.owner.uid) === S.uid))
+          .concat((S.catalog || []).filter((x) => x.owner && String(x.owner.uid) === S.uid));
+      }
+    }
     if (items.length || (S.catalog || []).length) {
       if (!same(items, S.catalog)) {
         S.catalog = items;
@@ -856,7 +917,7 @@ function autoPollMine() {
     if (orders && !same(orders, S.orders)) { S.orders = orders; if (S.tab === "orders") render(); }
   }, 4000);
   // вернулся в мини-апп из бота -> сразу подтянуть свежее
-  const onback = async () => { if (document.hidden) return; await Promise.all([loadCatalog(), loadMine(), loadOrders()]); render(); };
+  const onback = async () => { if (document.hidden) return; startLiveScan(); await Promise.all([loadCatalog(), loadMine(), loadOrders()]); render(); };
   window.addEventListener("pageshow", onback);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) onback(); });
 }

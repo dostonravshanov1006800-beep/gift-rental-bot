@@ -516,7 +516,8 @@ async def handle_start(session, chat_id, from_user, args=""):
     # ответ СРАЗУ, без зависимости от GitHub
     base_url = f"https://{REPO_NAME.split('/')[0]}.github.io/{REPO_NAME.split('/')[-1]}/" if REPO_NAME else ""
     # uid зашит в URL кнопок: мини-апп знает юзера, даже если Telegram не передал initData
-    app_url = f"{base_url}?u={from_user['id']}" if base_url else ""
+    # cb-бакет по часам: Telegram кэширует HTML мини-аппа, бакет заставляет брать свежий не реже раза в час
+    app_url = f"{base_url}?u={from_user['id']}&cb={int(time.time() // 3600)}" if base_url else ""
     markup = {"inline_keyboard": [[{"text": "Открыть маркетплейс", "web_app": {"url": app_url}}]]} if app_url else None
     if app_url:
         # reply-клавиатура: только из неё мини-апп может вызвать sendData (заказы и публикация без копирования)
