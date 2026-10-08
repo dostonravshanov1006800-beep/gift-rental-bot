@@ -411,28 +411,31 @@ async def handle_start(session, chat_id, from_user, args=""):
         await send_text(session, chat_id, "Жалоба записана, админ увидит её командой /complaints.")
         return
 
-    # регистрация
-    users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
-    known = any(u["id"] == from_user["id"] for u in users.get("users", []))
-    if not known:
-        users.setdefault("users", []).append({
-            "id": from_user["id"],
-            "username": from_user.get("username", ""),
-            "first": from_user.get("first_name", ""),
-            "ts": int(time.time())})
-        if repo.enabled:
-            await repo.commit_files(session, {
-                "data/users.json": json.dumps(users, ensure_ascii=False, indent=1).encode()},
-                f"bot: регистрация {from_user['id']}")
+    # ответ СРАЗУ, без зависимости от GitHub
+    app_url = f"https://{REPO_NAME.split('/')[0]}.github.io/{REPO_NAME.split('/')[-1]}/" if REPO_NAME else ""
+    markup = {"inline_keyboard": [[{"text": "Открыть маркетплейс", "web_app": {"url": app_url}}]]} if app_url else None
     await send_text(session, chat_id,
-        "Ты в системе. Твой ID: <code>" + str(from_user["id"]) + "</code>\n\n"
-        "1. Открой мини-апп через кнопку меню или ссылку админа.\n"
-        "2. Подарки подтянутся из твоего профиля автоматически "
-        "(первые минуты после регистрации, потом обновляются каждые 10 минут).\n"
-        "3. В мини-аппе выстави цены аренды и нажми «Верифицировать»: "
-        "скопирую пейлоад в буфер, ты вставь его сюда, я проверю подарки по реальному "
-        "профилю и верну подписанную витрину.\n\n"
-        "Мой ID для админа смотри в /myid.")
+        "<b>Gift Rent</b>: маркетплейс аренды NFT-подарков.\n\n"
+        "Арендуй подарки или сдавай свои. Всё внутри мини-аппа, заявки приходят сюда.\n"
+        f"Твой ID: <code>{from_user['id']}</code>",
+        markup)
+
+    # регистрация в фоне
+    async def register():
+        try:
+            users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
+            if any(u["id"] == from_user["id"] for u in users.get("users", [])):
+                return
+            users.setdefault("users", []).append({
+                "id": from_user["id"], "username": from_user.get("username", ""),
+                "first": from_user.get("first_name", ""), "ts": int(time.time())})
+            if repo.enabled:
+                await repo.commit_files(session, {
+                    "data/users.json": json.dumps(users, ensure_ascii=False, indent=1).encode()},
+                    f"bot: регистрация {from_user['id']}")
+        except Exception:
+            log.exception("регистрация упала")
+    asyncio.create_task(register())
 
 
 async def handle_block(session, chat_id, from_id, arg):
@@ -512,6 +515,19 @@ async def process_update(session, upd):
         await handle_order_status(session, uid, text.split()[-1] if len(text.split()) > 1 else "", "cancelled")
 
 
+async def safe_process(session, upd):
+    try:
+        await process_update(session, upd)
+    except Exception:
+        log.exception("update упал")
+        try:
+            msg = upd.get("message") or {}
+            if msg.get("chat"):
+                await send_text(session, msg["chat"]["id"], "Ошибка обработки, попробуй ещё раз через минуту.")
+        except Exception:
+            pass
+
+
 async def main():
     global BOT_USERNAME
     async with aiohttp.ClientSession() as session:
@@ -523,7 +539,18 @@ async def main():
         log.info("бот @%s стартует", BOT_USERNAME)
 
         # очистить хук, если был
-        await tg_call(session, "deleteWebhook", {"drop_pending_updates": True})
+        await tg_call(session, "deleteWebhook", {"drop_pending_updates": False})
+
+        # кнопка мини-аппа в меню чата + команды
+        app_url = f"https://{REPO_NAME.split('/')[0]}.github.io/{REPO_NAME.split('/')[-1]}/" if REPO_NAME else ""
+        if app_url:
+            await tg_call(session, "setChatMenuButton", {"menu_button": {
+                "type": "web_app", "text": "Аренда", "web_app": {"url": app_url}}})
+        await tg_call(session, "setMyCommands", {"commands": [
+            {"command": "start", "description": "Открыть маркетплейс"},
+            {"command": "orders", "description": "Мои входящие заказы"},
+            {"command": "myid", "description": "Мой Telegram ID"}]})
+        log.info("меню и команды настроены, url=%s", app_url)
 
         async def poll():
             offset = None
@@ -537,10 +564,7 @@ async def main():
                         data = await r.json()
                     for upd in data.get("result", []):
                         offset = upd["update_id"] + 1
-                        try:
-                            await process_update(session, upd)
-                        except Exception:
-                            log.exception("update упал")
+                        asyncio.create_task(safe_process(session, upd))
                 except asyncio.TimeoutError:
                     pass
                 except Exception:
