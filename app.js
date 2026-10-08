@@ -435,9 +435,9 @@ function drawMine() {
       if (!S._scanTmr) S._scanTmr = setTimeout(() => { if (mergeGifts().length) return; if (S.myGifts === "pending" || (CONFIG.scanToken && !S.liveTs && !mergeGifts().length)) { S._scanTmr = 0; S._scanGaveUp = true; drawMine(); } }, 12000);
       return;
     }
-    box.innerHTML = `<div class="empty"><b>Подарки не найдены</b>Подключи сканер: откроется @free_gifte_bot — нажми «Начать» (один раз) и вернись сюда. Подарки подтянутся мгновенно.<button class="btn" id="scancta" style="margin:14px auto 0;max-width:240px">Подключить сканер</button><span class="dim" style="margin-top:10px">Это нужно один раз, дальше профиль сканируется сам.</span></div>`;
+    box.innerHTML = `<div class="empty"><b>Подарки не найдены</b>Открой бота и нажми «Начать» — он мгновенно отсканирует твой профиль. Вернись сюда: подарки появятся в «Профиле», и их можно сдавать в аренду.<button class="btn" id="scancta" style="margin:14px auto 0;max-width:240px">Открыть бота и сканировать</button><span class="dim" style="margin-top:10px">Это нужно один раз, дальше профиль обновляется сам.</span></div>`;
     const cta = $("#scancta");
-    if (cta) cta.onclick = () => openTg("https://t.me/free_gifte_bot?start=scan");
+    if (cta) cta.onclick = () => openTg(`https://t.me/${CONFIG.botUsername}?start=scan`);
     return;
   }
   const repoIds = new Set((Array.isArray(S.myGifts) ? S.myGifts : []).map((g) => g.gid));

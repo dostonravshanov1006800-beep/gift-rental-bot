@@ -478,12 +478,20 @@ async def handle_start(session, chat_id, from_user, args=""):
     app_url = f"https://{REPO_NAME.split('/')[0]}.github.io/{REPO_NAME.split('/')[-1]}/" if REPO_NAME else ""
     markup = {"inline_keyboard": [[{"text": "Открыть маркетплейс", "web_app": {"url": app_url}}]]} if app_url else None
     if app_url:
-        # reply-клавиатура: только из неё мини-апп может вызвать sendData (публикация без копирования)
+        # reply-клавиатура: только из неё мини-апп может вызвать sendData (заказы и публикация без копирования)
         await tg_call(session, "sendMessage", {
-            "chat_id": chat_id, "text": "Кнопка снизу: сдать подарок в аренду в один тап.",
+            "chat_id": chat_id, "text": "Кнопки снизу: «Маркет» — аренда подарков, «Сдать подарок» — разместить свой.",
             "reply_markup": {"keyboard": [[{"text": "Маркет", "web_app": {"url": app_url}},
                                             {"text": "Сдать подарок", "web_app": {"url": app_url + "?m=pub"}}]],
                              "resize_keyboard": True, "is_persistent": True}})
+    if args == "scan" and app_url:
+        await send_text(session, chat_id,
+            "Профиль сканируется ✅\nЧерез пару секунд открой мини-апп — твои подарки будут во вкладке «Профиль».\n"
+            "Кнопка снизу: «Маркет».",
+            markup)
+        register = lambda: asyncio.create_task(ensure_registered(session, from_user))
+        register()
+        return
     await send_text(session, chat_id,
         "<b>Gift Rent</b>: маркетплейс аренды NFT-подарков.\n\n"
         "Арендуй подарки или сдавай свои. Всё внутри мини-аппа, заявки приходят сюда.\n"
