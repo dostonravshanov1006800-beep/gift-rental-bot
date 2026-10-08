@@ -1,0 +1,20 @@
+{
+ "orders": [
+  {
+   "id": "1",
+   "gid": "5170145012310081615",
+   "name": "💝",
+   "num": null,
+   "price": "3000",
+   "cur": "UZS",
+   "per": "день",
+   "comment": "ТЕСТ: проверка уведомлений о заказах, можно игнорировать",
+   "client_uid": 6999767433,
+   "client_username": "wanderfalcon",
+   "client_first": "Wander",
+   "ts": 1791475621,
+   "status": "new"
+  }
+ ],
+ "seq": 1
+}
