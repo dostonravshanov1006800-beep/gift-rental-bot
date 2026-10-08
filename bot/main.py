@@ -386,8 +386,20 @@ async def handle_order_status(session, from_id, oid, status):
         await send_text(session, from_id, f"Заказ #{oid} не найден.")
         return
     it["status"] = status
+    files = {path: json.dumps(orders, ensure_ascii=False, indent=1).encode()}
+    # синхронизируем копию клиента (вкладка «Мои»), чтобы статус не расходился
+    if it.get("client_uid"):
+        try:
+            cpath = f"data/my_orders/{it['client_uid']}.json"
+            mine = await repo.get_json(session, cpath) or {"orders": []}
+            cit = next((o for o in (mine.get("orders") or []) if str(o.get("id")) == str(oid)), None)
+            if cit:
+                cit["status"] = status
+                files[cpath] = json.dumps(mine, ensure_ascii=False, indent=1).encode()
+        except Exception:
+            log.exception("sync статуса в my_orders не удался")
     if repo.enabled:
-        await repo.commit_files(session, {path: json.dumps(orders, ensure_ascii=False, indent=1).encode()},
+        await repo.commit_files(session, files,
                                 f"bot: заказ #{oid} -> {status}")
     note = "выполнен" if status == "done" else "отменён"
     await send_text(session, from_id, f"Заказ #{oid}: {note}.")

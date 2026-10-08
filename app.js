@@ -331,10 +331,11 @@ document.addEventListener("click", (e) => { if (e.target === $("#overlay")) $("#
  * ORDERS
  * ============================================================ */
 function renderOrders() {
+  const inc = S.orders || [], out = S.myOrders || [];
+  if (S.ordersSeg === "in" && !inc.length && out.length) S.ordersSeg = "out";
   $("#topbar").innerHTML = `<h1>Заказы</h1><div class="tb-right"><button class="btn sec sm" id="rf">Обновить</button></div>`;
   $("#rf").onclick = async () => { await loadOrders(); renderOrders(); toast("Обновлено"); };
   localStorage.setItem("gr_seen_" + S.uid, String(Math.floor(Date.now() / 1000))); $("#ordersDot").hidden = true;
-  const inc = S.orders || [], out = S.myOrders || [];
   const list = S.ordersSeg === "in" ? inc.slice().reverse() : out.slice().reverse();
   const when = (t) => new Date((t || 0) * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
   const st = (s) => `<span class="ost ${s === "done" ? "done" : s === "cancelled" ? "cancelled" : "new"}">${s === "done" ? "выполнен" : s === "cancelled" ? "отменён" : "новый"}</span>`;
@@ -542,12 +543,14 @@ async function publish() {
   if (!obj.gifts.length) return toast("Включи хотя бы один подарок");
   const raw = JSON.stringify(obj);
   const btn = $("#pub");
-  // режим «Сдать подарок» (reply-кнопка): sendData уходит боту мгновенно, апп закрывается сам
-  if (tg && tg.sendData && _pubMode) {
-    btn && btn.classList.add("busy"); haptic("ok");
-    tg.sendData(raw);
-    return;
-  }
+  // sendData уходит боту мгновенно, если вход разрешает (reply-клавиатура); иначе фолбэк ниже
+  try {
+    if (tg && tg.sendData) {
+      btn && btn.classList.add("busy"); haptic("ok"); toast("Публикую…");
+      tg.sendData(raw);
+      return;
+    }
+  } catch (e) { /* sendData не разрешён этим входом — копируем */ }
   const payload = b64e(raw);
   if (payload.length > 3900) return toast("Слишком много подарков за раз: выключи часть");
   if (!(await copy(payload))) return toast("Не удалось скопировать");
