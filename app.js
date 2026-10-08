@@ -101,11 +101,30 @@ const gkey = (g) => (g.owner ? g.owner.uid : S.uid) + ":" + g.g;
 /* ============================================================
  * data
  * ============================================================ */
+const RAW = "https://raw.githubusercontent.com/dostonravshanov1006800-beep/gift-rental-bot/main/";
 async function getJSON(path) {
-  try { const r = await fetch(path + "?t=" + Date.now(), { cache: "no-store" }); if (r.status === 404) return "404"; if (!r.ok) return null; return await r.json(); } catch (e) { return null; }
+  const bust = path + "?t=" + Date.now();
+  // 1) живой коммит в репо: доступен через ~2с, без ожидания деплоя Pages
+  try {
+    const r = await fetch(RAW + bust, { cache: "no-store" });
+    if (r.status === 404) return "404";
+    if (r.ok) return await r.json();
+  } catch (e) {}
+  // 2) фолбэк: Pages-версия (отстаёт на ~минуту)
+  try {
+    const r = await fetch(bust, { cache: "no-store" });
+    if (r.status === 404) return "404";
+    if (r.ok) return await r.json();
+  } catch (e) {}
+  return null;
 }
 async function loadCatalog() { const d = await getJSON("data/catalog.json"); S.catalog = d && d !== "404" ? d.items || [] : []; }
-async function loadMine() { if (S.uid === "0") { S.myGifts = []; return; } const d = await getJSON(`data/gifts/${S.uid}.json`); S.myGifts = d === "404" ? "pending" : d ? d.gifts || [] : []; }
+async function loadMine() {
+  if (S.uid === "0") { S.myGifts = []; return; }
+  const d = await getJSON(`data/gifts/${S.uid}.json`);
+  S.myGifts = d === "404" ? "pending" : d ? d.gifts || [] : [];
+  S.myGiftsUpd = d && d !== "404" ? d.updated || 0 : 0;
+}
 async function loadOrders() {
   if (S.uid === "0") { S.orders = []; S.myOrders = []; return; }
   const a = await getJSON(`data/orders/${S.uid}.json`); S.orders = a && a !== "404" ? a.orders || [] : [];
@@ -327,6 +346,7 @@ function renderProfile() {
     <div class="card" id="req"></div>
 
     <div class="section-title">Сдать подарок в аренду</div>
+    <div class="scanstate" id="scanstate"></div>
     <div id="mine"></div>
     <div class="hint">Включи переключатель, укажи цену и срок. Бот сверит подарки с твоим профилем, публикация мгновенная.</div>
     <div class="btnrow"><button class="btn" id="pub">Опубликовать</button></div>`;
@@ -349,8 +369,22 @@ function drawReq() {
   $("#radd").onclick = () => { S.profile.req.push({ l: "", v: "" }); sv(); drawReq(); };
 }
 
+function drawScanState() {
+  const el = $("#scanstate"); if (!el) return;
+  const upd = S.myGiftsUpd;
+  if (S.myGifts === "pending") {
+    el.innerHTML = `<span class="spin"></span>Сканирую профиль Telegram…`;
+    return;
+  }
+  if (!upd) { el.innerHTML = ``; return; }
+  const age = Math.max(0, Math.round(Date.now() / 1000 - upd));
+  el.innerHTML = age < 60
+    ? `<i class="dot-live"></i>Профиль отсканирован ${age} с назад`
+    : `Профиль отсканирован ${Math.round(age / 60)} мин назад`;
+}
+
 function drawMine() {
-  const box = $("#mine"); if (!box) return;
+  const box = $("#mine"); if (!box) return; drawScanState();
   if (S.uid === "0") { box.innerHTML = `<div class="empty">Открой мини-апп через Telegram.</div>`; return; }
   if (S.myGifts === "pending") { box.innerHTML = `<div class="empty"><b>Подарки ещё не загружены</b>Нажми /start в боте: подарки подтянутся за несколько секунд.</div>`; return; }
   if (!S.myGifts || !S.myGifts.length) { box.innerHTML = `<div class="empty"><b>Нет уникальных подарков</b>Бот видит только подарки, открытые в твоём профиле.</div>`; return; }
@@ -494,14 +528,16 @@ function autoPollMine() {
     if (S.uid === "0") return;
     const d = await getJSON(`data/gifts/${S.uid}.json`);
     const arr = d && d !== "404" ? d.gifts || [] : null;
+    if (d && d !== "404" && d.updated) S.myGiftsUpd = d.updated;
     if (arr && !same(arr, S.myGifts === "pending" ? "pending" : S.myGifts)) {
       S.myGifts = arr;
-      if (S.tab === "profile") { renderProfile(); toast("Подарки из профиля обновлены"); }
-    }
+      if (S.tab === "profile") { renderProfile(); }
+      drawScanState();
+    } else if (S.tab === "profile") drawScanState();
     const o = await getJSON(`data/orders/${S.uid}.json`);
     const orders = o && o !== "404" ? o.orders || [] : null;
     if (orders && !same(orders, S.orders)) { S.orders = orders; if (S.tab === "orders") render(); }
-  }, 6000);
+  }, 4000);
   // вернулся в мини-апп из бота -> сразу подтянуть свежее
   const onback = async () => { if (document.hidden) return; await Promise.all([loadCatalog(), loadMine(), loadOrders()]); render(); };
   window.addEventListener("pageshow", onback);

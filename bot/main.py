@@ -165,6 +165,7 @@ async def build_user_files(session, uid) -> dict:
 
 KNOWN_THUMBS: set = set()
 _last_touch: dict[int, float] = {}
+LAST_SEEN: dict[int, float] = {}
 
 
 async def refresh_user(session, uid) -> bool:
@@ -190,22 +191,31 @@ async def maybe_touch_user(session, uid):
         log.exception("touch %s упал", uid)
 
 
-async def refresh_all_users(session):
-    """Цикл: подарки всех юзеров параллельно, один общий коммит только при изменениях."""
+async def refresh_all_users(session, hot_only=False):
+    """Подарки юзеров параллельно, один коммит при изменениях.
+    Горячие (писали боту за 15 мин) сканируются каждый тик, холодные — каждый 4-й."""
     if not repo.enabled:
         return
     users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
+    now = time.time()
+    targets = []
+    for u in users.get("users", []):
+        hot = now - LAST_SEEN.get(u["id"], 0) < 900
+        if hot or not hot_only:
+            targets.append(u)
+    if not targets:
+        return
     async def one(u):
         try:
             return await build_user_files(session, u["id"])
         except Exception:
             log.exception("getUserGifts упал для %s", u.get("id")); return {}
-    parts = await asyncio.gather(*[one(u) for u in users.get("users", [])])
+    parts = await asyncio.gather(*[one(u) for u in targets])
     changed = {}
     for p in parts:
         changed.update(p)
     if changed:
-        await repo.commit_files(session, changed, f"bot: подарки ({len(parts)} проф.)")
+        await repo.commit_files(session, changed, f"bot: подарки ({len(targets)} проф.)")
 
 
 # ---------------------------------------------------------------- catalog
@@ -556,6 +566,7 @@ async def process_update(session, upd):
     if not text:
         return
     if uid:
+        LAST_SEEN[uid] = time.time()
         asyncio.create_task(maybe_touch_user(session, uid))
     if text.startswith("/start"):
         args = text.split(maxsplit=1)[1] if len(text.split()) > 1 else ""
@@ -647,12 +658,18 @@ async def main():
 
         async def refresher():
             await asyncio.sleep(10)  # прогрев после старта
+            tick = 0
             while True:
                 try:
-                    await refresh_all_users(session)
+                    # горячие (юзер в мини-аппе / писал недавно): каждые 12с
+                    await refresh_all_users(session, hot_only=True)
+                    # холодные: каждый 4-й тик (~48с)
+                    if tick % 4 == 0:
+                        await refresh_all_users(session, hot_only=False)
                 except Exception:
                     log.exception("refresh упал")
-                await asyncio.sleep(REFRESH_INTERVAL)
+                tick += 1
+                await asyncio.sleep(12)
 
         await asyncio.gather(poll(), refresher())
 
