@@ -748,7 +748,10 @@ async def main():
 
         # кнопка мини-аппа в меню чата + команды
         app_url = f"https://{REPO_NAME.split('/')[0]}.github.io/{REPO_NAME.split('/')[-1]}/" if REPO_NAME else ""
-        await tg_call(session, "setChatMenuButton", {"menu_button": {"type": "commands"}})
+        if app_url:
+            # кнопка мини-аппа слева от поля ввода: основной быстрый вход в Маркет
+            await tg_call(session, "setChatMenuButton", {"menu_button": {
+                "type": "web_app", "text": "Маркет", "web_app": {"url": app_url + "?src=menu&m=mkt"}}})
         await tg_call(session, "setMyCommands", {"commands": [
             {"command": "start", "description": "Открыть маркетплейс"},
             {"command": "orders", "description": "Мои входящие заказы"},
