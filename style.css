@@ -408,3 +408,5 @@ select.inp { appearance: none; -webkit-appearance: none; }
 .faq-a[hidden]{display:none!important}
 .infobanner{padding:9px 12px;gap:4px}
 .infobanner p,.infobanner .ib-sub{font-size:12px}
+
+.faq-img{display:block;width:100%;margin:10px 0 2px;border-radius:10px;border:1px solid var(--line)}

@@ -604,7 +604,16 @@ async def handle_start(session, chat_id, from_user, args=""):
     else:
         txt = ("🎁 <b>Gift Rent</b>: аренда подарков Telegram.\n"
                "Кнопки внизу: <b>Маркет</b> (арендовать) и <b>Сдать подарок</b> (разместить свой).\n"
-               "Условия и FAQ: в приложении, вкладка «Профиль». Оплата P2P напрямую между пользователями.")
+               "Условия и FAQ с фото-инструкциями: в приложении, вкладка «Профиль». Оплата P2P напрямую между пользователями.")
+        if base_url:
+            try:
+                await tg_call(session, "sendPhoto", {
+                    "chat_id": chat_id, "photo": base_url + "assets/banner.jpg",
+                    "caption": txt, "parse_mode": "HTML", "reply_markup": kb})
+                asyncio.create_task(ensure_registered(session, from_user))
+                return
+            except Exception:
+                pass  # фото не ушло — отправим текстом ниже
     await send_text(session, chat_id, txt, kb)
     asyncio.create_task(ensure_registered(session, from_user))
 
