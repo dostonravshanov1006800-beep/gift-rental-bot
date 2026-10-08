@@ -100,6 +100,20 @@ function parseTgUser() {
   return u && u.id ? u : null;
 }
 const tgUser = parseTgUser();
+// SDK в вебвью (особенно Android, запуск с menu button) иногда отдаёт initData с задержкой:
+// пересчитываем пользователя в любой момент, а не один раз на загрузке модуля
+function getTg() { return window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null; }
+function parseTgUserLive() {
+  const w = getTg();
+  const fromQS = (qs) => { try { const u = new URLSearchParams(qs).get("user"); return u ? JSON.parse(u) : null; } catch (e) { return null; } };
+  let u = w && w.initDataUnsafe && w.initDataUnsafe.user;
+  if (!u && w && w.initData) u = fromQS(w.initData);
+  if (!u) { try { const h = new URLSearchParams(location.hash.replace(/^#/, "")).get("tgWebAppData"); if (h) u = fromQS(h); } catch (e) {} }
+  if (!u) { try { const q = new URLSearchParams(location.search).get("tgWebAppData"); if (q) u = fromQS(q); } catch (e) {} }
+  if (!u) { try { const s = sessionStorage.getItem("gr_tguser"); if (s) u = JSON.parse(s); } catch (e) {} }
+  if (u && u.id) { try { sessionStorage.setItem("gr_tguser", JSON.stringify(u)); } catch (e) {} return u; }
+  return null;
+}
 const S = {
   tab: "market",
   uid: tgUser ? String(tgUser.id) : "0",
@@ -371,7 +385,7 @@ function renderProfile() {
       ${uname ? `<div class="p-handle">@${esc(uname)}</div>` : ""}
       ${S.profile.about ? `<div class="p-about">${esc(S.profile.about)}</div>` : ""}
     </div>
-    <div class="idrow"><div><small>Telegram ID</small><b>${esc(S.uid)}</b></div><button class="btn out sm" id="cid">Копировать</button></div>
+    <div class="idrow"><div><small>Telegram ID</small><b>${S.uid === "0" ? "не определён" : esc(S.uid)}</b></div><button class="btn out sm" id="cid">${S.uid === "0" ? "Повторить" : "Копировать"}</button></div>
     <div class="btnrow"><button class="btn sec" id="edit">Редактировать</button><button class="btn sec" id="share">Моя витрина</button></div>
 
     <div class="section-title">Реквизиты для оплаты</div>
@@ -382,7 +396,10 @@ function renderProfile() {
     <div id="mine"></div>
     <div class="hint">Включи переключатель, укажи цену и срок. Бот сверит подарки с твоим профилем, публикация мгновенная.</div>
     <div class="btnrow"><button class="btn" id="pub">Опубликовать</button></div>`;
-  $("#cid").onclick = async () => { await copy(S.uid); haptic("ok"); toast("ID скопирован"); };
+  $("#cid").onclick = async () => {
+    if (S.uid === "0") { const ok = await applyTgUser(); if (!ok) toast("Telegram не передал данные. Открой апп кнопкой в чате с ботом."); return; }
+    await copy(S.uid); haptic("ok"); toast("ID скопирован");
+  };
   startLiveScan();
   $("#edit").onclick = openEdit;
   $("#share").onclick = shareShowcase;
@@ -425,7 +442,7 @@ function drawScanState() {
 
 function drawMine() {
   const box = $("#mine"); if (!box) return; drawScanState();
-  if (S.uid === "0") { box.innerHTML = `<div class="empty">Открой мини-апп через Telegram.</div>`; return; }
+  if (S.uid === "0") { box.innerHTML = `<div class="empty"><b>Не удалось определить аккаунт</b>Telegram не передал данные профиля. Закрой мини-апп и открой снова кнопкой «Открыть маркетплейс» в чате с ботом.<button class="btn" id="retryuid" style="margin:14px auto 0;max-width:240px">Повторить</button></div>`; const rb = $("#retryuid"); if (rb) rb.onclick = async () => { const ok = await applyTgUser(); if (!ok) toast("Данные пока недоступны"); }; return; }
   const list = mergeGifts();
   if (!list.length) {
     const scanning = ((CONFIG.scanToken && !S.liveTs) || S.myGifts === "pending") && !S._scanGaveUp;
@@ -662,7 +679,29 @@ async function renderShowcase() {
 /* ============================================================
  * init
  * ============================================================ */
+async function applyTgUser() {
+  const u = parseTgUserLive();
+  if (!u || String(u.id) === S.uid) return false;
+  S.user = u; S.uid = String(u.id);
+  const [p, t, f] = await Promise.all([load(CONFIG.profileKey, null), load(CONFIG.termsKey, {}), load(CONFIG.favKey, {})]);
+  if (p) S.profile = { ...S.profile, ...p };
+  S.terms = t || S.terms; S.fav = f || S.fav;
+  await Promise.all([loadMine(), loadOrders()]);
+  render();
+  return true;
+}
+
 async function init() {
+  // ждём появления пользователя до ~3с (SDK мог не успеть)
+  if (S.uid === "0") {
+    for (let i = 0; i < 12 && S.uid === "0"; i++) {
+      const u = parseTgUserLive();
+      if (u) { S.user = u; S.uid = String(u.id); break; }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+  // и дальше проверяем в фоне (если вебвью отдаст initData позже)
+  setInterval(() => { if (S.uid === "0") applyTgUser(); }, 1500);
   $$(".tab").forEach((b) => b.addEventListener("click", () => { S.viewShowcase = null; setTab(b.dataset.tab); }));
   $("#gadd").onclick = openAddRent;
   const sp = tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param;
