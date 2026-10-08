@@ -160,6 +160,72 @@ async def refresh_all_users(session):
 
 
 
+
+# ---------------------------------------------------------------- catalog
+async def rebuild_catalog(session):
+    """Собирает data/catalog.json из data/listings/*.json (плоский список подарков в аренде)."""
+    users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
+    deny = await repo.get_json(session, "denylist.json", {"uids": [], "hashes": []}) or {}
+    blocked = {str(x) for x in deny.get("uids", [])}
+    items = []
+    for u in users.get("users", []):
+        uid = str(u["id"])
+        if uid in blocked:
+            continue
+        lst = await repo.get_json(session, f"data/listings/{uid}.json")
+        if not lst:
+            continue
+        owner = {"uid": uid, "name": lst.get("name") or u.get("first", ""),
+                 "uname": lst.get("uname") or u.get("username", "")}
+        for g in lst.get("gifts", []):
+            items.append({**g, "owner": owner})
+    items.sort(key=lambda x: -int(x.get("ts", 0)))
+    return json.dumps({"updated": int(time.time()), "items": items}, ensure_ascii=False).encode()
+
+
+async def handle_publish(session, chat_id, from_id, obj):
+    """Лендлорд публикует листинг (тип l=1). Сверка с getUserGifts, запись, пересборка каталога."""
+    if str(obj.get("uid")) != str(from_id):
+        await send_text(session, chat_id, "Отказано: uid не совпадает с твоим аккаунтом.")
+        return
+    real = {g["gid"]: g for g in await fetch_user_gifts(session, from_id)}
+    out, fake = [], []
+    now = int(time.time())
+    for g in obj.get("gifts", []):
+        r = real.get(g.get("g"))
+        if not r:
+            fake.append(str(g.get("g")))
+            continue
+        out.append({
+            "g": r["gid"], "n": r.get("name", ""), "m": r.get("model", ""), "s": r.get("symbol", ""),
+            "num": r.get("num"), "cc": r.get("cc"), "ec": r.get("ec"),
+            "mr": r.get("mr"), "sr": r.get("sr"), "br": r.get("br"), "b": r.get("backdrop", ""),
+            "t": f"assets/gifts/{r['th_fuid']}.webp" if r.get("th_fuid") else "",
+            "p": str(g.get("p") or "")[:20], "cur": str(g.get("cur") or "UZS")[:5],
+            "per": str(g.get("per") or "месяц")[:10], "ts": now,
+        })
+    if fake:
+        await send_text(session, chat_id, "Этих подарков нет в профиле, пропущены: " + ", ".join(fake))
+    listing = {
+        "uid": str(from_id), "name": str(obj.get("name") or "")[:60],
+        "uname": str(obj.get("uname") or "")[:32],
+        "about": str(obj.get("about") or "")[:300],
+        "req": [{"l": str(r.get("l") or r.get("label") or "")[:30],
+                 "v": str(r.get("v") or r.get("value") or "")[:120]}
+                for r in (obj.get("req") or [])[:6]],
+        "gifts": out, "updated": now,
+    }
+    if not repo.enabled:
+        await send_text(session, chat_id, "Репозиторий не подключён.")
+        return
+    await repo.commit_files(session, {
+        f"data/listings/{from_id}.json": json.dumps(listing, ensure_ascii=False).encode()},
+        f"bot: листинг {from_id} ({len(out)} подарков)")
+    cat = await rebuild_catalog(session)
+    await repo.commit_files(session, {"data/catalog.json": cat}, "bot: каталог")
+    await send_text(session, chat_id,
+        f"✅ Опубликовано подарков в аренду: {len(out)}. Каталог обновится на сайте через ~1 минуту.")
+
 # ---------------------------------------------------------------- orders
 async def handle_order(session, from_user, obj):
     """Клиент вставил пейлоад заказа: {o:1, lu, g, p, cur, per, c}."""
@@ -203,6 +269,18 @@ async def handle_order(session, from_user, obj):
         await repo.commit_files(session, {
             f"data/orders/{lu}.json": json.dumps(orders, ensure_ascii=False, indent=1).encode()},
             f"bot: заказ #{seq} для {lu}")
+
+    if repo.enabled:
+        mine = await repo.get_json(session, f"data/my_orders/{from_user['id']}.json", {"orders": []}) \
+            or {"orders": []}
+        mine["orders"] = (mine.get("orders") or [])[-100:] + [{
+            "id": str(seq), "lu": lu, "name": gift.get("name", ""), "num": gift.get("num"),
+            "price": str(obj.get("p") or ""), "cur": obj.get("cur") or "", "per": obj.get("per") or "",
+            "ts": int(time.time()), "status": "new",
+            "owner_username": landlord.get("username", "")}]
+        await repo.commit_files(session, {
+            f"data/my_orders/{from_user['id']}.json": json.dumps(mine, ensure_ascii=False).encode()},
+            f"bot: мой заказ {from_user['id']}")
 
     cust = ("@" + from_user["username"]) if from_user.get("username") \
         else f"tg://user?id={from_user['id']}"
@@ -418,6 +496,8 @@ async def process_update(session, upd):
             return
         if obj.get("o") == 1:
             await handle_order(session, from_user, obj)
+        elif obj.get("l") == 1:
+            await handle_publish(session, chat_id, uid, obj)
         else:
             await handle_verify(session, chat_id, uid, text)
     elif text.startswith("/block"):

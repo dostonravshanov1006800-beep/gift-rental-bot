@@ -2,27 +2,38 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>Gift Rent · Аренда подарков</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Gift Rent</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div id="app">
-    <header class="topbar">
-      <div class="brand">
-        <span class="brand-dot"></span>
-        Gift Rent
-      </div>
-      <button id="btnToEditor" class="chip" hidden>Мой редактор</button>
-    </header>
-
+    <header class="topbar" id="topbar"></header>
     <main id="view"></main>
+    <nav class="tabbar" id="tabbar">
+      <button class="tab" data-tab="market">
+        <svg viewBox="0 0 24 24"><path d="M5 8h14l-1 12H6L5 8z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></svg>
+        <span>Аренда</span>
+      </button>
+      <button class="tab" data-tab="fav">
+        <svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.600-7 10-7 10z"/></svg>
+        <span>Избранное</span>
+      </button>
+      <button class="tab" data-tab="orders">
+        <svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4V5z"/></svg>
+        <span>Заказы</span>
+        <i class="dot" id="ordersDot" hidden></i>
+      </button>
+      <button class="tab" data-tab="profile">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.400 3.600-7 8-7s8 2.600 8 7"/></svg>
+        <span>Профиль</span>
+      </button>
+    </nav>
 
     <div id="overlay" class="overlay" hidden>
       <div class="sheet" id="sheet"></div>
     </div>
-
     <div id="toast" class="toast" hidden></div>
   </div>
   <script src="app.js"></script>

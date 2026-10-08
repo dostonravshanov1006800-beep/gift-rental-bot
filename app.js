@@ -1,883 +1,455 @@
 "use strict";
 
 /* ============================================================
- * КОНФИГ
+ * CONFIG
  * ============================================================ */
 const CONFIG = {
-  botUsername: "free_rental_bot", // бот из BotFather
-  appShortName: "gifts",          // short name из BotFather /newapp
-  storageKey: "gift_rental_profile_v2",
-  termsKey: "gift_rental_terms_v1",
-  payloadLimit: 3800,
-
-  // публичный ключ подписи витрин (приватный лежит в GitHub Secrets бота)
+  botUsername: "free_rental_bot",
+  appShortName: "gifts",
+  profileKey: "gr_profile_v3",
+  termsKey: "gr_terms_v3",
+  favKey: "gr_fav_v3",
   verifyKey: {"kty":"EC","crv":"P-256","x":"GQ1mE9ZzXYcYxW6yLoBD3lzMYOpQd60ntJgUPdY7nLo","y":"5JBfRbOwbZD4bb1yEutCIQeFw3eB7inih9agTkGLs3g","key_ops":["verify"],"ext":true},
-  denylistUrl: "denylist.json",
 };
-
-const PERIODS = ["час", "день", "неделя", "месяц", "ед."];
+const PERIODS = ["час", "день", "неделя", "месяц"];
 const CURRENCIES = ["UZS", "RUB", "USD", "USDT", "TON"];
 
 const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
-if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+if (tg) {
+  try { tg.ready(); tg.expand(); tg.setHeaderColor && tg.setHeaderColor("#ffffff"); tg.setBackgroundColor && tg.setBackgroundColor("#ffffff"); } catch (e) {}
+}
 
 /* ============================================================
- * Утилиты
+ * utils
  * ============================================================ */
-const $ = (s) => document.querySelector(s);
+const $ = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-function esc(s) {
-  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[c]));
-}
+let toastT = null;
+function toast(m) { const el = $("#toast"); el.textContent = m; el.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => (el.hidden = true), 3000); }
+function haptic(k) { try { if (tg && tg.HapticFeedback) k === "ok" ? tg.HapticFeedback.notificationOccurred("success") : tg.HapticFeedback.selectionChanged(); } catch (e) {} }
+const hex = (n) => (typeof n === "number" && !isNaN(n) ? "#" + n.toString(16).padStart(6, "0") : null);
+const pct = (r) => (typeof r === "number" ? (r / 10).toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + "%" : "");
+function money(v) { const n = parseFloat(String(v).replace(/\s/g, "").replace(",", ".")); return isNaN(n) ? String(v) : n.toLocaleString("ru-RU", { maximumFractionDigits: 2 }); }
+function numOf(v) { const n = parseFloat(String(v || "").replace(/\s/g, "").replace(",", ".")); return isNaN(n) ? null : n; }
 
-let toastTimer = null;
-function toast(msg) {
-  const el = $("#toast");
-  el.textContent = msg;
-  el.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, 3200);
-}
+const b64e = (str) => { const b = new TextEncoder().encode(str); let s = ""; for (const x of b) s += String.fromCharCode(x); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
+const b64d = (s) => { s = s.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return new TextDecoder().decode(Uint8Array.from(atob(s), (c) => c.charCodeAt(0))); };
+const b64bytes = (s) => { s = s.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return Uint8Array.from(atob(s), (c) => c.charCodeAt(0)); };
 
-function haptic(type) {
-  try {
-    if (tg && tg.HapticFeedback) {
-      if (type === "success") tg.HapticFeedback.notificationOccurred("success");
-      else tg.HapticFeedback.impactOccurred("light");
-    }
-  } catch (e) {}
-}
-
-function rgbHex(n) {
-  if (typeof n !== "number" || isNaN(n)) return null;
-  return "#" + n.toString(16).padStart(6, "0");
-}
-
-function rarityPct(rpm) {
-  if (typeof rpm !== "number" || isNaN(rpm)) return "";
-  return (rpm / 10).toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + "%";
-}
-
-function fmtPrice(v) {
-  const n = parseFloat(String(v).replace(",", "."));
-  if (isNaN(n)) return v;
-  return n.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
-}
-
-function b64urlEncode(str) {
-  const bytes = new TextEncoder().encode(str);
-  let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function b64urlDecode(s) {
-  s = s.replace(/-/g, "+").replace(/_/g, "/");
-  while (s.length % 4) s += "=";
-  const bin = atob(s);
-  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
-}
-
-function b64urlToBytes(s) {
-  s = s.replace(/-/g, "+").replace(/_/g, "/");
-  while (s.length % 4) s += "=";
-  const bin = atob(s);
-  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
-}
-
-function bytesToB64url(bytes) {
-  let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-async function sha256B64url(str) {
-  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
-  return bytesToB64url(new Uint8Array(d));
-}
-
-async function verifySignature(payloadStr, sigStr) {
-  if (!CONFIG.verifyKey) return "off";
+async function verifySig(payload, sig) {
   if (!window.crypto || !crypto.subtle) return "nocrypto";
   try {
-    const key = await crypto.subtle.importKey(
-      "jwk", CONFIG.verifyKey, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
-    const ok = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key,
-      b64urlToBytes(sigStr), new TextEncoder().encode(payloadStr));
-    return ok ? "valid" : "invalid";
-  } catch (e) {
-    return "nocrypto";
+    const k = await crypto.subtle.importKey("jwk", CONFIG.verifyKey, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+    return (await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, k, b64bytes(sig), new TextEncoder().encode(payload))) ? "valid" : "invalid";
+  } catch (e) { return "nocrypto"; }
+}
+
+async function copy(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (e) {
+    try { const t = document.createElement("textarea"); t.value = text; t.style.cssText = "position:fixed;opacity:0"; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); return true; } catch (e2) { return false; }
   }
 }
+function openTg(url) { if (tg && tg.openTelegramLink && url.startsWith("https://t.me/")) tg.openTelegramLink(url); else window.open(url, "_blank"); }
 
-async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch (e) {
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-      return true;
-    } catch (e2) {
-      return false;
-    }
-  }
-}
-
-function openTg(url) {
-  if (tg && tg.openTelegramLink && (url.startsWith("https://t.me/") || url.startsWith("tg://"))) tg.openTelegramLink(url);
-  else window.open(url, "_blank");
-}
-
-/* ============================================================
- * Хранилище: Telegram CloudStorage + фолбэк localStorage
- * ============================================================ */
-function csAvailable() {
-  return !!(tg && tg.CloudStorage && typeof tg.CloudStorage.getItem === "function");
-}
-
-function csGet(key) {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
-    setTimeout(() => finish(null), 2500);
-    try {
-      const p = tg.CloudStorage.getItem(key, (err, val) => finish(err ? null : val));
-      if (p && p.then) p.then((r) => finish(Array.isArray(r) ? (r[0] ? null : r[1]) : null)).catch(() => finish(null));
-    } catch (e) { finish(null); }
-  });
-}
-
-function csSet(key, val) {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (ok) => { if (!settled) { settled = true; resolve(ok); } };
-    setTimeout(() => finish(false), 2500);
-    try {
-      const p = tg.CloudStorage.setItem(key, val, (err) => finish(!err));
-      if (p && p.then) p.then((r) => finish(Array.isArray(r) ? !r[0] : true)).catch(() => finish(false));
-    } catch (e) { finish(false); }
-  });
-}
-
-async function loadKey(key) {
-  let raw = null;
-  if (csAvailable()) raw = await csGet(key);
+/* ---------- storage: CloudStorage + localStorage ---------- */
+const csOK = () => !!(tg && tg.CloudStorage && typeof tg.CloudStorage.getItem === "function");
+const csGet = (k) => new Promise((res) => { let d = false; const f = (v) => { if (!d) { d = true; res(v); } }; setTimeout(() => f(null), 2500); try { tg.CloudStorage.getItem(k, (e, v) => f(e ? null : v)); } catch (e) { f(null); } });
+const csSet = (k, v) => new Promise((res) => { let d = false; const f = (x) => { if (!d) { d = true; res(x); } }; setTimeout(() => f(false), 2500); try { tg.CloudStorage.setItem(k, v, (e) => f(!e)); } catch (e) { f(false); } });
+async function load(key, dflt) {
+  let raw = csOK() ? await csGet(key) : null;
   if (!raw) raw = localStorage.getItem(key);
-  try {
-    const data = raw ? JSON.parse(raw) : null;
-    if (data && typeof data === "object") return data;
-  } catch (e) {}
-  return null;
+  try { const d = raw ? JSON.parse(raw) : null; if (d && typeof d === "object") return d; } catch (e) {}
+  return dflt;
 }
-
-let saveTimer = null;
-function scheduleSave(key, obj) {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
+const timers = {};
+function save(key, obj) {
+  clearTimeout(timers[key]);
+  timers[key] = setTimeout(async () => {
     const raw = JSON.stringify(obj);
     try { localStorage.setItem(key, raw); } catch (e) {}
-    if (csAvailable()) {
-      const ok = await csSet(key, raw);
-      if (!ok) toast("Не сохранилось в облако Telegram, сохранено на устройстве");
-    }
-  }, 400);
+    if (csOK()) await csSet(key, raw);
+  }, 350);
 }
 
 /* ============================================================
- * Модель
+ * state
  * ============================================================ */
-function defaultProfile() {
-  return {
-    display_name: "",
-    about: "",
-    username: "",
-    sell_price: "",
-    sell_currency: "UZS",
-    requisites: [],
-  };
-}
-
-function defaultTerms() {
-  return {}; // { gid: {p, cur, per, av} }
-}
-
-function currentUid() {
-  try {
-    return (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id)
-      ? String(tg.initDataUnsafe.user.id) : "0";
-  } catch (e) { return "0"; }
-}
-
-const state = {
-  mode: "editor",
-  uid: "0",
-  profile: null,
-  terms: null,
-  myGifts: null,     // [{gid, name, num, model, symbol, cc, ec, mr, sr, br, th_fuid}]
-  showcase: null,
-  payloadStr: null,
-  sig: null,
-  giftSearch: "",
+const tgUser = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) || null;
+const S = {
+  tab: "market",
+  uid: tgUser ? String(tgUser.id) : "0",
+  user: tgUser,
+  profile: { name: "", about: "", uname: "", sell: "", sellCur: "UZS", req: [] },
+  terms: {},          // gid -> {p, cur, per, on}
+  fav: {},            // key -> true
+  catalog: null,      // [{...gift, owner}]
+  myGifts: null,      // "pending" | []
+  orders: null,       // incoming
+  myOrders: null,     // outgoing
+  ordersSeg: "in",
+  q: "", cur: "all", sort: "new",
+  showcase: null, payload: null, sig: null,
 };
+const gkey = (g) => (g.owner ? g.owner.uid : S.uid) + ":" + g.g;
 
 /* ============================================================
- * Мои подарки (реальные, от бота)
+ * data
  * ============================================================ */
-async function fetchMyGifts() {
-  const uid = state.uid;
-  if (!uid || uid === "0") return null;
-  try {
-    const res = await fetch(`data/gifts/${uid}.json?t=${Date.now()}`, { cache: "no-store" });
-    if (res.status === 404) return "pending";
-    if (!res.ok) return null;
-    const d = await res.json();
-    return d.gifts || [];
-  } catch (e) { return null; }
+async function getJSON(path) {
+  try { const r = await fetch(path + "?t=" + Date.now(), { cache: "no-store" }); if (r.status === 404) return "404"; if (!r.ok) return null; return await r.json(); } catch (e) { return null; }
 }
-
-/* ============================================================
- * Редактор
- * ============================================================ */
-function renderEditor() {
-  $("#btnToEditor").hidden = true;
-  $("#view").innerHTML = `
-    <div class="section">
-      <div class="section-title">Профиль витрины</div>
-      <div class="card">
-        <div class="field">
-          <label>Название / ваше имя</label>
-          <input type="text" id="f_name" maxlength="60" placeholder="Doston Gifts" value="${esc(state.profile.display_name)}">
-        </div>
-        <div class="field">
-          <label>О коллекции</label>
-          <textarea id="f_about" maxlength="400" placeholder="Условия аренды, залог, сроки">${esc(state.profile.about)}</textarea>
-        </div>
-        <div class="field">
-          <label>Telegram для связи (без @)</label>
-          <input type="text" id="f_username" maxlength="32" placeholder="username" value="${esc(state.profile.username)}">
-        </div>
-        <div class="row">
-          <div class="field">
-            <label>Цена коллекции целиком</label>
-            <input type="text" id="f_sellprice" inputmode="decimal" placeholder="1000000" value="${esc(state.profile.sell_price)}">
-          </div>
-          <div class="field narrow">
-            <label>Валюта</label>
-            <select id="f_sellcur">${CURRENCIES.map((c) => `<option value="${c}" ${c === state.profile.sell_currency ? "selected" : ""}>${c}</option>`).join("")}</select>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="section">
-      <div class="section-title">Реквизиты для оплаты</div>
-      <div class="card" id="req_box"></div>
-      <div class="hint">Увидит только тот, кому вы отправите ссылку на витрину.</div>
-    </div>
-
-    <div class="section">
-      <div class="section-title">Заказы на аренду</div>
-      <div id="orders_box"></div>
-    </div>
-
-    <div class="section">
-      <div class="section-title">Мои подарки (реальные, из профиля Telegram)</div>
-      <div id="gifts_stats"></div>
-      <div class="field" id="gifts_search_box" style="margin-bottom:10px">
-        <input type="text" id="giftSearch" placeholder="Поиск: название, модель, символ, №" maxlength="40">
-      </div>
-      <div class="gift-list" id="gift_list"></div>
-      <div class="hint" id="gifts_status"></div>
-    </div>
-
-    <div class="section">
-      <div class="hint" style="text-align:center">
-        Кнопка внизу копирует пейлоад витрины и открывает бота: вставь его в чат,
-        бот сверит подарки с твоим профилем и вернёт подписанную витрину.
-      </div>
-    </div>
-  `;
-
-  const bind = (id, prop) => {
-    const el = $("#" + id);
-    if (el) el.addEventListener("input", () => { state.profile[prop] = el.value; scheduleSave(CONFIG.storageKey, state.profile); });
-  };
-  bind("f_name", "display_name");
-  bind("f_about", "about");
-  bind("f_username", "username");
-  bind("f_sellprice", "sell_price");
-  const selCur = $("#f_sellcur");
-  if (selCur) selCur.addEventListener("change", () => { state.profile.sell_currency = selCur.value; scheduleSave(CONFIG.storageKey, state.profile); });
-
-  const search = $("#giftSearch");
-  if (search) search.addEventListener("input", () => { state.giftSearch = search.value.trim().toLowerCase(); renderMyGifts(); });
-
-  renderRequisites();
-  renderMyGifts();
-  renderOrders();
-
-  const action = async () => {
-    const payload = buildPayloadString();
-    if (!payload) return;
-    await copyText(payload);
-    haptic("success");
-    toast("Пейлоад скопирован. Вставь его в чат бота и отправь.");
-    setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}`), 700);
-  };
-
-  if (tg && tg.MainButton) {
-    tg.MainButton.setText("Верифицировать витрину");
-    tg.MainButton.show();
-    tg.MainButton.offClick(action);
-    tg.MainButton.onClick(action);
-  } else {
-    document.querySelectorAll(".fab").forEach((el) => el.remove());
-    const fab = document.createElement("div");
-    fab.className = "fab fab-row";
-    fab.innerHTML = `<button class="btn">Верифицировать витрину</button>
-      <button class="btn secondary" id="fabShare">Скопировать ссылку без подписи</button>`;
-    fab.querySelector(".btn").addEventListener("click", action);
-    $("#fabShare").addEventListener("click", shareUnsigned);
-    document.body.appendChild(fab);
-  }
-}
-
-/* ---------- Реквизиты ---------- */
-function renderRequisites() {
-  const box = $("#req_box");
-  box.innerHTML = state.profile.requisites
-    .map((r, i) => `
-      <div class="item-row">
-        <input type="text" class="req-label" data-i="${i}" maxlength="30" placeholder="Карта UZ" value="${esc(r.label || "")}">
-        <input type="text" class="req-value" data-i="${i}" maxlength="120" placeholder="8600 12xx xxxx xxxx" value="${esc(r.value || "")}">
-        <button class="del" data-i="${i}" title="Удалить">×</button>
-      </div>`)
-    .join("") + `<button class="btn ghost" id="btnAddReq" style="padding:8px 0 0">+ Добавить реквизит</button>`;
-
-  box.querySelectorAll(".req-label").forEach((el) =>
-    el.addEventListener("input", () => { state.profile.requisites[el.dataset.i].label = el.value; scheduleSave(CONFIG.storageKey, state.profile); }));
-  box.querySelectorAll(".req-value").forEach((el) =>
-    el.addEventListener("input", () => { state.profile.requisites[el.dataset.i].value = el.value; scheduleSave(CONFIG.storageKey, state.profile); }));
-  box.querySelectorAll(".del").forEach((el) =>
-    el.addEventListener("click", () => { state.profile.requisites.splice(+el.dataset.i, 1); scheduleSave(CONFIG.storageKey, state.profile); renderRequisites(); }));
-  $("#btnAddReq").addEventListener("click", () => {
-    state.profile.requisites.push({ label: "", value: "" });
-    scheduleSave(CONFIG.storageKey, state.profile);
-    renderRequisites();
-    const inputs = box.querySelectorAll(".req-label");
-    if (inputs.length) inputs[inputs.length - 1].focus();
-  });
-}
-
-/* ---------- Мои подарки ---------- */
-function editorStats(gifts) {
-  const all = gifts || [];
-  const active = all.filter((g) => {
-    const t = state.terms[g.gid] || {};
-    return t.av !== false;
-  });
-  let sum = 0, priced = 0;
-  const curCount = {};
-  active.forEach((g) => {
-    const t = state.terms[g.gid] || {};
-    const n = parseFloat(String(t.p || "").replace(",", "."));
-    if (!isNaN(n)) { sum += n; priced++; curCount[t.cur || "UZS"] = (curCount[t.cur || "UZS"] || 0) + 1; }
-  });
-  const mainCur = Object.keys(curCount).sort((a, b) => curCount[b] - curCount[a])[0] || "UZS";
-  return { all: all.length, active: active.length, priced, sum: sum ? fmtPrice(sum) + " " + mainCur : "" };
-}
-
-function renderMyGifts() {
-  const list = $("#gift_list");
-  const status = $("#gifts_status");
-  const statsBox = $("#gifts_stats");
-  const searchBox = $("#gifts_search_box");
-
-  if (state.uid === "0") {
-    if (statsBox) statsBox.innerHTML = "";
-    if (searchBox) searchBox.hidden = true;
-    list.innerHTML = `<div class="empty">Открой мини-апп из Telegram, чтобы увидеть свои подарки.</div>`;
-    status.textContent = "";
-    return;
-  }
-  if (state.myGifts === "pending") {
-    if (statsBox) statsBox.innerHTML = "";
-    if (searchBox) searchBox.hidden = true;
-    list.innerHTML = `<div class="empty">Подарки ещё подтягиваются: нажми /start боту, бот обновляет списки каждые ~10 минут.</div>`;
-    status.innerHTML = `<button class="btn ghost" id="btnReloadGifts" style="padding:4px">Обновить</button>`;
-    $("#btnReloadGifts").addEventListener("click", async () => {
-      state.myGifts = await fetchMyGifts();
-      renderMyGifts();
-    });
-    return;
-  }
-  if (!state.myGifts || !state.myGifts.length) {
-    if (statsBox) statsBox.innerHTML = "";
-    if (searchBox) searchBox.hidden = true;
-    list.innerHTML = `<div class="empty">Уникальных подарков в профиле не найдено.</div>`;
-    status.textContent = "";
-    return;
-  }
-
-  const st = editorStats(state.myGifts);
-  statsBox.innerHTML = `
-    <div class="stat-bar">
-      <div class="stat"><b>${st.all}</b><span>подарков</span></div>
-      <div class="stat"><b>${st.active}</b><span>на витрине</span></div>
-      <div class="stat"><b>${st.priced}</b><span>с ценой</span></div>
-      ${st.sum ? `<div class="stat"><b>${esc(st.sum)}</b><span>сумма цен</span></div>` : ""}
-    </div>`;
-  searchBox.hidden = false;
-
-  const q = state.giftSearch;
-  const filtered = q ? state.myGifts.filter((g) =>
-    [g.name, g.model, g.symbol, g.uniq, g.num, g.backdrop].some(
-      (v) => v != null && String(v).toLowerCase().includes(q))) : state.myGifts;
-
-  status.textContent = `${state.myGifts.length} уникальных подарков · ${filtered.length} показано · цена пустая = «по договорённости»`;
-
-  list.innerHTML = filtered.map((g) => {
-    const t = state.terms[g.gid] || {};
-    const av = t.av !== false;
-    const thumb = g.th_fuid ? `assets/gifts/${esc(g.th_fuid)}.webp` : "";
-    const c1 = rgbHex(g.cc) || "#5aa7e0";
-    return `
-      <div class="gift-row" data-gid="${esc(g.gid)}">
-        <div class="gift-thumb" style="background: radial-gradient(circle at 50% 42%, ${c1}, var(--card))">
-          ${thumb ? `<img src="${thumb}" alt="" onerror="this.remove()">` : "🎁"}
-        </div>
-        <div class="gift-meta">
-          <div class="name">${esc(g.name || "Подарок")} #${esc(g.num ?? "")}</div>
-          <div class="sub">${esc(g.model || "")}${rarityPct(g.mr) ? " · " + rarityPct(g.mr) : ""} · ${esc(g.symbol || "")}</div>
-        </div>
-        <div class="gift-terms">
-          <input type="text" class="gt-price" inputmode="decimal" placeholder="цена" value="${esc(t.p || "")}">
-          <div class="row">
-            <select class="gt-cur">${CURRENCIES.map((c) => `<option value="${c}" ${c === (t.cur || "UZS") ? "selected" : ""}>${c}</option>`).join("")}</select>
-            <select class="gt-per">${PERIODS.map((c) => `<option value="${c}" ${c === (t.per || "месяц") ? "selected" : ""}>${c}</option>`).join("")}</select>
-          </div>
-          <label class="checkline"><input type="checkbox" class="gt-av" ${av ? "checked" : ""}> на витрине</label>
-        </div>
-      </div>`;
-  }).join("");
-
-  list.querySelectorAll(".gift-row").forEach((row) => {
-    const gid = row.dataset.gid;
-    const setTerm = (prop, val) => {
-      const t = state.terms[gid] || (state.terms[gid] = {});
-      t[prop] = val;
-      scheduleSave(CONFIG.termsKey, state.terms);
-      const st2 = editorStats(state.myGifts);
-      const sb = $("#gifts_stats");
-      if (sb) sb.innerHTML = `
-        <div class="stat-bar">
-          <div class="stat"><b>${st2.all}</b><span>подарков</span></div>
-          <div class="stat"><b>${st2.active}</b><span>на витрине</span></div>
-          <div class="stat"><b>${st2.priced}</b><span>с ценой</span></div>
-          ${st2.sum ? `<div class="stat"><b>${esc(st2.sum)}</b><span>сумма цен</span></div>` : ""}
-        </div>`;
-    };
-    row.querySelector(".gt-price").addEventListener("input", (e) => setTerm("p", e.target.value));
-    row.querySelector(".gt-cur").addEventListener("change", (e) => setTerm("cur", e.target.value));
-    row.querySelector(".gt-per").addEventListener("change", (e) => setTerm("per", e.target.value));
-    row.querySelector(".gt-av").addEventListener("change", (e) => setTerm("av", e.target.checked));
-  });
-}
-
-
-/* ============================================================
- * Заказы (от бота)
- * ============================================================ */
-async function fetchOrders() {
-  const uid = state.uid;
-  if (!uid || uid === "0") return null;
-  try {
-    const res = await fetch(`data/orders/${uid}.json?t=${Date.now()}`, { cache: "no-store" });
-    if (res.status === 404) return { orders: [] };
-    if (!res.ok) return null;
-    return await res.json();
-  } catch (e) { return null; }
-}
-
-function renderOrders() {
-  const box = $("#orders_box");
-  if (!box) return;
-  box.innerHTML = `<div class="empty">Загрузка заказов...</div>`;
-  fetchOrders().then((d) => {
-    const b = $("#orders_box");
-    if (!b) return;
-    if (!d) { b.innerHTML = `<div class="empty">Заказы недоступны прямо сейчас.</div>`; return; }
-    const items = (d.orders || []).slice().reverse();
-    if (!items.length) {
-      b.innerHTML = `<div class="empty">Заказов пока нет. Отправь витрину клиентам: они жмут «Заказать аренду», ты получаешь уведомление от бота.</div>`;
-      return;
-    }
-    b.innerHTML = items.map((it) => {
-      const st = it.status === "done" ? `<span class="ost done">выполнен</span>`
-        : it.status === "cancelled" ? `<span class="ost cancelled">отменён</span>`
-        : `<span class="ost new">новый</span>`;
-      const cust = it.client_username ? "@" + esc(it.client_username) : "ID " + esc(it.client_uid);
-      const ts = new Date((it.ts || 0) * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
-      return `
-        <div class="order-card">
-          <div class="order-head">
-            <b>№${esc(it.id)} · ${esc(it.name || "")} #${esc(it.num ?? "")}</b>
-            ${st}
-          </div>
-          <div class="order-sub">${esc(it.price ? fmtPrice(it.price) + " " + it.cur + " / " + it.per : "по договорённости")} · ${esc(ts)}</div>
-          <div class="order-client">Клиент: ${cust}${it.comment ? ` · «${esc(it.comment)}»` : ""}</div>
-        </div>`;
-    }).join("") +
-    `<div class="hint">Статусы меняются в боте: /orders — список, /done № — выполнен, /cancel № — отменён.</div>`;
-  });
+async function loadCatalog() { const d = await getJSON("data/catalog.json"); S.catalog = d && d !== "404" ? d.items || [] : []; }
+async function loadMine() { if (S.uid === "0") { S.myGifts = []; return; } const d = await getJSON(`data/gifts/${S.uid}.json`); S.myGifts = d === "404" ? "pending" : d ? d.gifts || [] : []; }
+async function loadOrders() {
+  if (S.uid === "0") { S.orders = []; S.myOrders = []; return; }
+  const a = await getJSON(`data/orders/${S.uid}.json`); S.orders = a && a !== "404" ? a.orders || [] : [];
+  const b = await getJSON(`data/my_orders/${S.uid}.json`); S.myOrders = b && b !== "404" ? b.orders || [] : [];
+  const seen = Number(localStorage.getItem("gr_seen_" + S.uid) || 0);
+  const fresh = S.orders.filter((o) => o.status === "new" && o.ts > seen).length;
+  $("#ordersDot").hidden = !fresh;
 }
 
 /* ============================================================
- * Сборка витрины
+ * shell: tabs
  * ============================================================ */
-function buildShowcaseObject() {
-  const gifts = (state.myGifts && Array.isArray(state.myGifts) ? state.myGifts : [])
-    .filter((g) => {
-      const t = state.terms[g.gid] || {};
-      return t.av !== false;
-    })
-    .map((g) => {
-      const t = state.terms[g.gid] || {};
-      return {
-        g: g.gid,
-        n: g.name || "",
-        m: g.model || "",
-        s: g.symbol || "",
-        num: g.num,
-        cc: g.cc,
-        ec: g.ec,
-        mr: g.mr,
-        sr: g.sr,
-        br: g.br,
-        t: g.th_fuid ? `assets/gifts/${g.th_fuid}.webp` : "",
-        p: t.p || "",
-        cur: t.cur || "UZS",
-        per: t.per || "месяц",
-      };
-    });
-  return {
-    v: 2,
-    uid: state.uid,
-    name: state.profile.display_name || "",
-    about: state.profile.about || "",
-    uname: state.profile.username || "",
-    sell: state.profile.sell_price || "",
-    cur: state.profile.sell_currency || "UZS",
-    req: state.profile.requisites.filter((r) => r.value),
-    gifts,
-  };
+function setTab(t) {
+  S.tab = t;
+  $$(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === t));
+  render();
+  window.scrollTo(0, 0);
 }
-
-function buildPayloadString() {
-  const obj = buildShowcaseObject();
-  if (!obj.gifts.length) {
-    toast("Витрина пуста: включи подарки в разделе «Мои подарки».");
-    return null;
-  }
-  const payload = b64urlEncode(JSON.stringify(obj));
-  if (payload.length > CONFIG.payloadLimit) {
-    toast("Витрина слишком большая для ссылки (~4 КБ): сократи описания или уменьши количество подарков.");
-    return null;
-  }
-  return payload;
-}
-
-async function shareUnsigned() {
-  const payload = buildPayloadString();
-  if (!payload) return;
-  const link = `https://t.me/${CONFIG.botUsername}/${CONFIG.appShortName}?startapp=${payload}`;
-  await copyText(link);
-  toast("Ссылка скопирована (без верификации). Для зелёного значка верифицируй через бота.");
+function render() {
+  if (S.showcase && S.tab === "market" && S.viewShowcase) return renderShowcase();
+  ({ market: renderMarket, fav: renderFav, orders: renderOrders, profile: renderProfile }[S.tab])();
 }
 
 /* ============================================================
- * Витрина (просмотр)
+ * gift card (цены внизу, ровная сетка)
  * ============================================================ */
-function renderStorefront() {
-  const p = state.showcase;
-  const gifts = p.gifts || [];
-  const initials = (p.name || "?").trim().slice(0, 1).toUpperCase();
-
-  $("#btnToEditor").hidden = false;
-  $("#view").innerHTML = `
-    <div class="hero">
-      <div class="avatar">${esc(initials)}</div>
-      <h1>${esc(p.name || "Витрина подарков")}</h1>
-      <div id="verifyBadge"></div>
-      ${p.about ? `<div class="about">${esc(p.about)}</div>` : ""}
-      ${p.sell ? `
-        <div class="collection-price">
-          <span class="val">${esc(fmtPrice(p.sell))}</span>
-          <span class="cur">${esc(p.cur || "")} · вся коллекция</span>
-        </div>` : ""}
-    </div>
-
-    <div class="section">
-      <div class="section-title">Подарки · ${gifts.length}</div>
-      <div class="grid">
-        ${gifts.map((g, i) => renderGiftCard(g, i)).join("")}
-      </div>
-    </div>
-
-    ${
-      p.req && p.req.length
-        ? `
-        <div class="section">
-          <div class="section-title">Реквизиты для оплаты</div>
-          <div class="card">
-            ${p.req.map((r) => `
-              <div class="req-item">
-                <div>
-                  <div class="label">${esc(r.l || r.label || "Реквизит")}</div>
-                  <div class="value">${esc(r.v || r.value || "")}</div>
-                </div>
-                <button class="copy" data-copy="${esc(r.v || r.value || "")}">Копировать</button>
-              </div>`).join("")}
-          </div>
-        </div>`
-        : ""
-    }
-
-    ${
-      p.uname
-        ? `<div class="section">
-             <button class="btn secondary" id="btnContact">Написать @${esc(p.uname)}</button>
-           </div>`
-        : ""
-    }
-
-    <div class="footer-note">
-      Аренда оплачивается переводом по реквизитам. Условия уточняйте у владельца.<br>
-      <button class="btn ghost" id="btnReport" style="padding:4px">Пожаловаться</button>
-    </div>
-  `;
-
-  document.querySelectorAll("[data-copy]").forEach((el) =>
-    el.addEventListener("click", async () => {
-      const ok = await copyText(el.dataset.copy);
-      toast(ok ? "Скопировано" : "Не удалось скопировать");
-      if (ok) haptic("success");
-    }));
-
-  document.querySelectorAll(".gift-card").forEach((el) =>
-    el.addEventListener("click", () => openGiftDetail(+el.dataset.idx)));
-
-  const contact = $("#btnContact");
-  if (contact) contact.addEventListener("click", () => openTg(`https://t.me/${encodeURIComponent(p.uname)}`));
-
-  $("#btnReport").addEventListener("click", async () => {
-    const h = await sha256B64url(state.payloadStr);
-    openTg(`https://t.me/${CONFIG.botUsername}?start=rp_${encodeURIComponent(String(p.uid || 0))}_${h.slice(0, 12)}`);
-  });
-
-  if (tg && tg.MainButton) tg.MainButton.hide();
-  securityPass();
-}
-
-function renderGiftCard(g, idx) {
-  const c1 = rgbHex(g.cc) || "#5aa7e0";
-  const c2 = rgbHex(g.ec) || "#2b3f66";
+function card(g, i) {
+  const c1 = hex(g.cc) || "#5aa7e0", c2 = hex(g.ec) || "#2b3f66";
+  const fav = S.fav[gkey(g)];
   const price = g.p
-    ? `${esc(fmtPrice(g.p))} ${esc(g.cur || "")} <span class="sub">/ ${esc(g.per || "")}</span>`
-    : `<span class="sub">по договорённости</span>`;
-  return `
-    <div class="gift-card" data-idx="${idx}">
-      <div class="gc-canvas" style="--c1:${c1};--c2:${c2}">
-        ${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : "🎁"}
-        <div class="gc-num">#${esc(g.num ?? "")}</div>
-      </div>
-      <div class="gc-body">
-        <div class="name">${esc(g.n || g.g || "Подарок")}</div>
-        <div class="attrs">${esc(g.m || "")} · ${esc(g.s || "")}</div>
-        <div class="price">${price}</div>
-      </div>
+    ? `<div class="gprice">${esc(money(g.p))} <small>${esc(g.cur || "")} / ${esc(g.per || "")}</small></div>`
+    : `<div class="gprice dim">по договорённости</div>`;
+  return `<div class="gcard" data-i="${i}">
+    <div class="gcanvas" style="--c1:${c1};--c2:${c2}">
+      ${g.t ? `<img src="${esc(g.t)}" alt="" loading="lazy" onerror="this.remove()">` : `<span style="font-size:40px">🎁</span>`}
+      <div class="gnum">#${esc(g.num ?? "")}</div>
+      <button class="gheart ${fav ? "on" : ""}" data-fav="${i}" aria-label="В избранное"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.600-7 10-7 10z"/></svg></button>
     </div>
-  `;
+    <div class="ginfo">
+      <div class="gname">${esc(g.n || "Подарок")}</div>
+      <div class="gattr">${esc(g.m || "")}${g.s ? " · " + esc(g.s) : ""}</div>
+      ${price}
+    </div>
+  </div>`;
 }
 
-/* ---------- Детальный просмотр подарка ---------- */
-function openGiftDetail(idx) {
-  const g = (state.showcase.gifts || [])[idx];
-  if (!g) return;
-  haptic("light");
-
-  const c1 = rgbHex(g.cc) || "#5aa7e0";
-  const c2 = rgbHex(g.ec) || "#2b3f66";
-  const chips = [
-    ["Модель", g.m, g.mr],
-    ["Символ", g.s, g.sr],
-    ["Фон", null, g.br],
-  ].filter(([, label]) => label !== null);
-
-  const sheet = $("#sheet");
-  sheet.innerHTML = `
-    <div class="sheet-title">
-      <span>${esc(g.n || g.g || "Подарок")} · #${esc(g.num ?? "")}</span>
-      <button class="sheet-close" id="detailClose">×</button>
-    </div>
-    <div class="detail-canvas" style="--c1:${c1};--c2:${c2}">
-      ${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : "🎁"}
-      <div class="gc-num">#${esc(g.num ?? "")}</div>
-    </div>
-    <div class="detail-name">${esc(g.n || g.g || "Подарок")}</div>
-    <div class="detail-chips">
-      ${chips.map(([label, val, rar]) => `
-        <div class="dchip">
-          <span>${label}</span>
-          <b>${esc(val || "—")}</b>
-          ${rar ? `<i>${rarityPct(rar)}</i>` : ""}
-        </div>`).join("")}
-    </div>
-    <div class="detail-price">
-      ${g.p ? `${esc(fmtPrice(g.p))} ${esc(g.cur || "")} <span class="sub">/ ${esc(g.per || "")}</span>`
-             : "Цена по договорённости"}
-    </div>
-    <div class="field" style="margin:12px 0 4px">
-      <label>Комментарий к заказу (необязательно, до 80 символов)</label>
-      <input type="text" id="orderComment" maxlength="80" placeholder="На какой срок, вопросы...">
-    </div>
-    <div class="fab-row">
-      <button class="btn" id="detailOrder">Заказать аренду</button>
-      <button class="btn secondary" id="detailNft">Ссылка на NFT</button>
-    </div>
-    <div class="hint" style="text-align:center; margin-top:8px">
-      Подарок и атрибуты сверены с профилем Telegram при верификации витрины.
-    </div>
-  `;
-  $("#overlay").hidden = false;
-
-  $("#detailClose").addEventListener("click", () => { $("#overlay").hidden = true; });
-  $("#detailNft").addEventListener("click", async () => {
-    if (!g.g) { toast("Имя подарка недоступно"); return; }
-    const url = `https://t.me/nft/${encodeURIComponent(String(g.g).toLowerCase())}`;
-    openTg(url);
-  });
-  const w = $("#detailWrite");
-  if (w) w.addEventListener("click", () => openTg(`https://t.me/${encodeURIComponent(state.showcase.uname)}`));
-
-  $("#detailOrder").addEventListener("click", async () => {
-    const g2 = g;
-    const comment = ($("#orderComment") && $("#orderComment").value || "").slice(0, 80);
-    const orderObj = {
-      o: 1,
-      lu: String(state.showcase.uid || ""),
-      g: g2.g || "",
-      p: g2.p || "",
-      cur: g2.cur || "",
-      per: g2.per || "",
-      c: comment,
-    };
-    const payload = b64urlEncode(JSON.stringify(orderObj));
-    const ok = await copyText(payload);
-    if (!ok) { toast("Не удалось скопировать заказ, попробуй ещё раз"); return; }
-    haptic("success");
-    toast("Заказ скопирован. Вставь его в чат бота и отправь.");
-    setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}`), 700);
-    $("#overlay").hidden = true;
-  });
-}
-
-/* ---------- Проверка безопасности ---------- */
-async function securityPass() {
-  const badge = $("#verifyBadge");
-  if (!badge) return;
-
-  let blocked = false;
-  try {
-    const res = await fetch(CONFIG.denylistUrl + "?t=" + Date.now(), { cache: "no-store" });
-    if (res.ok) {
-      const list = await res.json();
-      const uid = String(state.showcase.uid || "");
-      const hash = await sha256B64url(state.payloadStr);
-      if ((list.uids || []).map(String).includes(uid) ||
-          (list.hashes || []).includes(hash)) blocked = true;
-    }
-  } catch (e) {}
-  if (blocked) { renderBlocked(); return; }
-
-  if (!state.sig) {
-    badge.innerHTML = `<span class="vbadge warn">⚠ Витрина не верифицирована. Проверьте владельца у бота @${esc(CONFIG.botUsername)} перед оплатой</span>`;
-    return;
-  }
-  const result = await verifySignature(state.payloadStr, state.sig);
-  if (result === "valid") {
-    badge.innerHTML = `<span class="vbadge ok">✓ Подарки сверены с профилем Telegram и подписаны ботом @${esc(CONFIG.botUsername)}</span>`;
-    haptic("success");
-  } else if (result === "invalid") {
-    badge.innerHTML = `<span class="vbadge bad">✕ Подпись недействительна: витрина изменена после проверки</span>`;
-  } else {
-    badge.innerHTML = `<span class="vbadge warn">⚠ Витрина с подписью, но устройство не смогло её проверить</span>`;
-  }
-}
-
-function renderBlocked() {
-  $("#view").innerHTML = `
-    <div class="section" style="padding-top:40px">
-      <div class="card" style="text-align:center; border:1px solid var(--danger)">
-        <div style="font-size:40px; margin-bottom:10px">🚫</div>
-        <h2 style="color:var(--danger); margin-bottom:8px">Витрина заблокирована</h2>
-        <div class="hint" style="font-size:14px">
-          Эта витрина внесена в стоп-лист за нарушения или жалобы.
-          Не переводите деньги её владельцу.
-        </div>
-      </div>
-    </div>
-  `;
+function bindCards(list, root) {
+  $$(".gcard", root).forEach((el) => el.addEventListener("click", (e) => {
+    if (e.target.closest("[data-fav]")) return;
+    openDetail(list[+el.dataset.i]);
+  }));
+  $$("[data-fav]", root).forEach((b) => b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const g = list[+b.dataset.fav]; const k = gkey(g);
+    if (S.fav[k]) delete S.fav[k]; else S.fav[k] = { ...g };
+    save(CONFIG.favKey, S.fav); haptic();
+    b.classList.toggle("on", !!S.fav[k]);
+    if (S.tab === "fav") renderFav();
+  }));
 }
 
 /* ============================================================
- * Инициализация
+ * MARKET (главная аренда)
+ * ============================================================ */
+function marketList() {
+  let l = (S.catalog || []).slice();
+  const q = S.q.trim().toLowerCase();
+  if (q) l = l.filter((g) => [g.n, g.m, g.s, g.num, g.owner && g.owner.name, g.owner && g.owner.uname].some((v) => v != null && String(v).toLowerCase().includes(q)));
+  if (S.cur !== "all") l = l.filter((g) => g.cur === S.cur);
+  if (S.sort === "asc") l.sort((a, b) => (numOf(a.p) ?? 1e18) - (numOf(b.p) ?? 1e18));
+  if (S.sort === "desc") l.sort((a, b) => (numOf(b.p) ?? -1) - (numOf(a.p) ?? -1));
+  return l;
+}
+
+function renderMarket() {
+  $("#topbar").innerHTML = `<div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="q" type="search" placeholder="Поиск подарков и арендодателей" value="${esc(S.q)}"></div>`;
+  const curs = ["all", ...CURRENCIES];
+  $("#view").innerHTML = `
+    <div class="chips">
+      ${curs.map((c) => `<button class="chip ${S.cur === c ? "on" : ""}" data-cur="${c}">${c === "all" ? "Все" : c}</button>`).join("")}
+      <button class="chip ${S.sort === "asc" ? "on" : ""}" data-sort="asc">Дешевле</button>
+      <button class="chip ${S.sort === "desc" ? "on" : ""}" data-sort="desc">Дороже</button>
+    </div>
+    <div id="grid"></div>`;
+  $("#q").addEventListener("input", (e) => { S.q = e.target.value; drawGrid(); });
+  $$("[data-cur]").forEach((b) => b.addEventListener("click", () => { S.cur = b.dataset.cur; renderMarket(); }));
+  $$("[data-sort]").forEach((b) => b.addEventListener("click", () => { S.sort = S.sort === b.dataset.sort ? "new" : b.dataset.sort; renderMarket(); }));
+  drawGrid();
+}
+function drawGrid() {
+  const box = $("#grid"); if (!box) return;
+  if (S.catalog === null) { box.innerHTML = `<div class="grid">${Array(6).fill(`<div class="gcard"><div class="gcanvas skeleton"></div><div class="ginfo"><div class="skeleton" style="height:12px;border-radius:6px"></div></div></div>`).join("")}</div>`; return; }
+  const l = marketList();
+  if (!l.length) {
+    box.innerHTML = `<div class="empty"><b>${S.catalog.length ? "Ничего не найдено" : "Пока нет подарков в аренде"}</b>${S.catalog.length ? "Измени поиск или фильтры." : "Арендодатели публикуют подарки в разделе «Профиль»."}</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="grid">${l.map(card).join("")}</div>`;
+  bindCards(l, box);
+}
+
+/* ============================================================
+ * FAVORITES
+ * ============================================================ */
+function renderFav() {
+  $("#topbar").innerHTML = `<h1>Избранное</h1>`;
+  const l = Object.values(S.fav);
+  if (!l.length) { $("#view").innerHTML = `<div class="empty"><b>Пусто</b>Нажми на сердечко на карточке подарка.</div>`; return; }
+  $("#view").innerHTML = `<div class="grid">${l.map(card).join("")}</div>`;
+  bindCards(l, $("#view"));
+}
+
+/* ============================================================
+ * DETAIL + ORDER
+ * ============================================================ */
+function openDetail(g) {
+  haptic();
+  const c1 = hex(g.cc) || "#5aa7e0", c2 = hex(g.ec) || "#2b3f66";
+  const o = g.owner || { uid: S.showcase ? S.showcase.uid : "", name: S.showcase ? S.showcase.name : "", uname: S.showcase ? S.showcase.uname : "" };
+  const mine = String(o.uid) === S.uid;
+  const rows = [["Модель", g.m, g.mr], ["Символ", g.s, g.sr], ["Фон", g.b || "", g.br]].filter((r) => r[1]);
+  $("#sheet").innerHTML = `
+    <div class="sheet-h"><span>${esc(g.n || "Подарок")} #${esc(g.num ?? "")}</span><button class="sheet-x" id="x">×</button></div>
+    <div class="dcanvas" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : "🎁"}</div>
+    <div class="dchips">${rows.map((r) => `<div class="dchip"><span>${r[0]}</span><b>${esc(r[1])}</b>${r[2] ? `<i>${pct(r[2])}</i>` : ""}</div>`).join("")}</div>
+    <div class="dprice">${g.p ? `${esc(money(g.p))} ${esc(g.cur || "")} <small>/ ${esc(g.per || "")}</small>` : `<small>Цена по договорённости</small>`}</div>
+    <div class="owner"><div class="oav">${esc((o.name || o.uname || "?").slice(0, 1).toUpperCase())}</div><div><b>${esc(o.name || "Арендодатель")}</b><span>${o.uname ? "@" + esc(o.uname) : "ID " + esc(o.uid)}</span></div></div>
+    ${mine ? `<div class="hint" style="margin:0 0 10px">Это твой подарок.</div>` : `
+    <div class="field"><label>Комментарий (срок, вопросы)</label><input id="oc" maxlength="80" placeholder="Например: на 3 дня"></div>
+    <div class="row">
+      <button class="btn" id="ord">Заказать аренду</button>
+      <button class="btn out" id="nft">NFT</button>
+    </div>`}
+    ${mine ? `<button class="btn out" id="nft" style="width:100%">Открыть NFT</button>` : ""}`;
+  $("#overlay").hidden = false;
+  $("#x").onclick = () => ($("#overlay").hidden = true);
+  $("#nft").onclick = () => openTg(`https://t.me/nft/${encodeURIComponent(String(g.g).toLowerCase())}`);
+  const ord = $("#ord");
+  if (ord) ord.onclick = async () => {
+    const payload = b64e(JSON.stringify({ o: 1, lu: String(o.uid), g: g.g, p: g.p || "", cur: g.cur || "", per: g.per || "", c: ($("#oc").value || "").slice(0, 80) }));
+    if (!(await copy(payload))) return toast("Не удалось скопировать заказ");
+    haptic("ok"); toast("Заказ скопирован. Вставь его в чат бота.");
+    $("#overlay").hidden = true;
+    setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}`), 600);
+  };
+}
+document.addEventListener("click", (e) => { if (e.target === $("#overlay")) $("#overlay").hidden = true; });
+
+/* ============================================================
+ * ORDERS
+ * ============================================================ */
+function renderOrders() {
+  $("#topbar").innerHTML = `<h1>Заказы</h1><div class="tb-right"><button class="btn sec sm" id="rf">Обновить</button></div>`;
+  $("#rf").onclick = async () => { await loadOrders(); renderOrders(); toast("Обновлено"); };
+  localStorage.setItem("gr_seen_" + S.uid, String(Math.floor(Date.now() / 1000))); $("#ordersDot").hidden = true;
+  const inc = S.orders || [], out = S.myOrders || [];
+  const list = S.ordersSeg === "in" ? inc.slice().reverse() : out.slice().reverse();
+  const when = (t) => new Date((t || 0) * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const st = (s) => `<span class="ost ${s === "done" ? "done" : s === "cancelled" ? "cancelled" : "new"}">${s === "done" ? "выполнен" : s === "cancelled" ? "отменён" : "новый"}</span>`;
+  $("#view").innerHTML = `
+    <div class="seg"><button data-s="in" class="${S.ordersSeg === "in" ? "on" : ""}">Входящие · ${inc.length}</button><button data-s="out" class="${S.ordersSeg === "out" ? "on" : ""}">Мои · ${out.length}</button></div>
+    ${list.length ? list.map((o) => `
+      <div class="ocard">
+        <div class="ohead"><b>№${esc(o.id)} · ${esc(o.name || "")} #${esc(o.num ?? "")}</b>${st(o.status)}</div>
+        <div class="osub">${o.price ? esc(money(o.price)) + " " + esc(o.cur || "") + " / " + esc(o.per || "") : "по договорённости"} · ${esc(when(o.ts))}</div>
+        ${S.ordersSeg === "in"
+          ? `<div class="ocl">Клиент: ${o.client_username ? "@" + esc(o.client_username) : "ID " + esc(o.client_uid)}${o.comment ? " · «" + esc(o.comment) + "»" : ""}</div>
+             ${o.status === "new" ? `<div class="oact">
+               ${o.client_username ? `<button class="btn out sm" data-w="${esc(o.client_username)}">Написать</button>` : ""}
+               <button class="btn sm" data-cmd="/done ${esc(o.id)}">Выполнен</button>
+               <button class="btn danger sm" data-cmd="/cancel ${esc(o.id)}">Отмена</button></div>` : ""}`
+          : `<div class="ocl">Арендодатель: ${o.owner_username ? "@" + esc(o.owner_username) : "ID " + esc(o.lu)}</div>`}
+      </div>`).join("") : `<div class="empty"><b>Заказов нет</b>${S.ordersSeg === "in" ? "Когда клиент закажет подарок, бот пришлёт уведомление, а заказ появится здесь." : "Твои заказы на аренду появятся здесь."}</div>`}
+    ${S.ordersSeg === "in" && list.length ? `<div class="hint">Кнопки «Выполнен» и «Отмена» копируют команду: отправь её боту.</div>` : ""}`;
+  $$("[data-s]").forEach((b) => b.onclick = () => { S.ordersSeg = b.dataset.s; renderOrders(); });
+  $$("[data-w]").forEach((b) => b.onclick = () => openTg(`https://t.me/${b.dataset.w}`));
+  $$("[data-cmd]").forEach((b) => b.onclick = async () => { await copy(b.dataset.cmd); haptic("ok"); toast("Команда скопирована. Отправь её боту."); setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}`), 500); });
+}
+
+/* ============================================================
+ * PROFILE (Instagram-style) + размещение подарков
+ * ============================================================ */
+function myListedCount() { return Array.isArray(S.myGifts) ? S.myGifts.filter((g) => (S.terms[g.gid] || {}).on).length : 0; }
+
+function renderProfile() {
+  const u = S.user || {};
+  const name = S.profile.name || [u.first_name, u.last_name].filter(Boolean).join(" ") || "Пользователь";
+  const uname = S.profile.uname || u.username || "";
+  const mineInCat = (S.catalog || []).filter((g) => g.owner && String(g.owner.uid) === S.uid).length;
+  $("#topbar").innerHTML = `<h1>${uname ? "@" + esc(uname) : "Профиль"}</h1>`;
+  $("#view").innerHTML = `
+    <div class="p-head">
+      <div class="avatar"><div>${u.photo_url ? `<img src="${esc(u.photo_url)}" alt="">` : esc(name.slice(0, 1).toUpperCase())}</div></div>
+      <div class="p-stats">
+        <div><b>${Array.isArray(S.myGifts) ? S.myGifts.length : 0}</b><span>подарков</span></div>
+        <div><b>${mineInCat}</b><span>в аренде</span></div>
+        <div><b>${(S.orders || []).filter((o) => o.status === "done").length}</b><span>сдач</span></div>
+      </div>
+    </div>
+    <div class="p-body">
+      <div class="p-name">${esc(name)}</div>
+      ${uname ? `<div class="p-handle">@${esc(uname)}</div>` : ""}
+      ${S.profile.about ? `<div class="p-about">${esc(S.profile.about)}</div>` : ""}
+    </div>
+    <div class="idrow"><div><small>Telegram ID</small><b>${esc(S.uid)}</b></div><button class="btn out sm" id="cid">Копировать</button></div>
+    <div class="btnrow"><button class="btn sec" id="edit">Редактировать</button><button class="btn sec" id="share">Моя витрина</button></div>
+
+    <div class="section-title">Реквизиты для оплаты</div>
+    <div class="card" id="req"></div>
+
+    <div class="section-title">Сдать подарок в аренду</div>
+    <div id="mine"></div>
+    <div class="hint">Включи переключатель, укажи цену и срок, затем нажми «Опубликовать». Бот сверит подарки с твоим профилем и добавит их в каталог.</div>
+    <div class="btnrow"><button class="btn" id="pub">Опубликовать в каталог</button></div>`;
+  $("#cid").onclick = async () => { await copy(S.uid); haptic("ok"); toast("ID скопирован"); };
+  $("#edit").onclick = openEdit;
+  $("#share").onclick = shareShowcase;
+  $("#pub").onclick = publish;
+  drawReq(); drawMine();
+}
+
+function drawReq() {
+  const box = $("#req"); if (!box) return;
+  box.innerHTML = S.profile.req.map((r, i) => `
+    <div class="ritem"><input class="inp" data-rl="${i}" placeholder="Карта UZ" maxlength="30" value="${esc(r.l || "")}"><input class="inp" data-rv="${i}" placeholder="Номер / кошелёк" maxlength="120" value="${esc(r.v || "")}"><button class="del" data-rd="${i}">×</button></div>`).join("")
+    + `<button class="rlink" id="radd">+ Добавить реквизит</button>`;
+  const sv = () => save(CONFIG.profileKey, S.profile);
+  $$("[data-rl]", box).forEach((e) => e.oninput = () => { S.profile.req[+e.dataset.rl].l = e.value; sv(); });
+  $$("[data-rv]", box).forEach((e) => e.oninput = () => { S.profile.req[+e.dataset.rv].v = e.value; sv(); });
+  $$("[data-rd]", box).forEach((e) => e.onclick = () => { S.profile.req.splice(+e.dataset.rd, 1); sv(); drawReq(); });
+  $("#radd").onclick = () => { S.profile.req.push({ l: "", v: "" }); sv(); drawReq(); };
+}
+
+function drawMine() {
+  const box = $("#mine"); if (!box) return;
+  if (S.uid === "0") { box.innerHTML = `<div class="empty">Открой мини-апп через Telegram.</div>`; return; }
+  if (S.myGifts === "pending") { box.innerHTML = `<div class="empty"><b>Подарки ещё не загружены</b>Нажми /start в боте. Список подтянется в течение ~10 минут.</div>`; return; }
+  if (!S.myGifts || !S.myGifts.length) { box.innerHTML = `<div class="empty"><b>Нет уникальных подарков</b>Бот видит только подарки, открытые в твоём профиле.</div>`; return; }
+  box.innerHTML = S.myGifts.map((g) => {
+    const t = S.terms[g.gid] || {};
+    const c1 = hex(g.cc) || "#5aa7e0", c2 = hex(g.ec) || "#2b3f66";
+    return `<div class="lrow" data-g="${esc(g.gid)}">
+      <div class="lthumb" style="--c1:${c1};--c2:${c2}">${g.th_fuid ? `<img src="assets/gifts/${esc(g.th_fuid)}.webp" alt="" onerror="this.remove()">` : "🎁"}</div>
+      <div class="lmeta"><b>${esc(g.name || "")} #${esc(g.num ?? "")}</b><span>${esc(g.model || "")}${g.mr ? " · " + pct(g.mr) : ""}</span></div>
+      <label class="switch"><input type="checkbox" ${t.on ? "checked" : ""}><i></i></label>
+    </div>
+    <div class="pform" data-pf="${esc(g.gid)}" ${t.on ? "" : "hidden"} style="padding:0 14px 12px;border-bottom:1px solid var(--line)">
+      <div class="row"><input class="inp" data-p inputmode="decimal" placeholder="Цена" value="${esc(t.p || "")}">
+        <select class="inp" data-c>${CURRENCIES.map((c) => `<option ${c === (t.cur || "UZS") ? "selected" : ""}>${c}</option>`).join("")}</select>
+        <select class="inp" data-r>${PERIODS.map((c) => `<option ${c === (t.per || "день") ? "selected" : ""}>${c}</option>`).join("")}</select></div>
+    </div>`;
+  }).join("");
+  $$(".lrow", box).forEach((row) => {
+    const gid = row.dataset.g; const pf = $(`[data-pf="${CSS.escape(gid)}"]`, box);
+    const t = () => (S.terms[gid] = S.terms[gid] || {});
+    $("input[type=checkbox]", row).onchange = (e) => { t().on = e.target.checked; pf.hidden = !e.target.checked; save(CONFIG.termsKey, S.terms); haptic(); };
+    $("[data-p]", pf).oninput = (e) => { t().p = e.target.value; save(CONFIG.termsKey, S.terms); };
+    $("[data-c]", pf).onchange = (e) => { t().cur = e.target.value; save(CONFIG.termsKey, S.terms); };
+    $("[data-r]", pf).onchange = (e) => { t().per = e.target.value; save(CONFIG.termsKey, S.terms); };
+  });
+}
+
+function openEdit() {
+  const u = S.user || {};
+  $("#sheet").innerHTML = `
+    <div class="sheet-h"><span>Редактировать профиль</span><button class="sheet-x" id="x">×</button></div>
+    <div class="field"><label>Имя</label><input id="e1" maxlength="60" value="${esc(S.profile.name || [u.first_name, u.last_name].filter(Boolean).join(" "))}"></div>
+    <div class="field"><label>Username для связи (без @)</label><input id="e2" maxlength="32" value="${esc(S.profile.uname || u.username || "")}"></div>
+    <div class="field"><label>О себе / условия аренды</label><textarea id="e3" maxlength="300">${esc(S.profile.about)}</textarea></div>
+    <button class="btn" id="e4" style="width:100%">Сохранить</button>`;
+  $("#overlay").hidden = false;
+  $("#x").onclick = () => ($("#overlay").hidden = true);
+  $("#e4").onclick = () => {
+    S.profile.name = $("#e1").value.trim(); S.profile.uname = $("#e2").value.trim().replace(/^@/, ""); S.profile.about = $("#e3").value.trim();
+    save(CONFIG.profileKey, S.profile); $("#overlay").hidden = true; renderProfile(); toast("Сохранено");
+  };
+}
+
+function buildListing() {
+  const gifts = (Array.isArray(S.myGifts) ? S.myGifts : []).filter((g) => (S.terms[g.gid] || {}).on).map((g) => {
+    const t = S.terms[g.gid]; return { g: g.gid, p: t.p || "", cur: t.cur || "UZS", per: t.per || "день" };
+  });
+  const u = S.user || {};
+  return { l: 1, uid: S.uid, name: S.profile.name || [u.first_name, u.last_name].filter(Boolean).join(" "), uname: S.profile.uname || u.username || "", about: S.profile.about, req: S.profile.req.filter((r) => r.v), gifts };
+}
+
+async function publish() {
+  const obj = buildListing();
+  if (!obj.gifts.length) return toast("Включи хотя бы один подарок");
+  const payload = b64e(JSON.stringify(obj));
+  if (payload.length > 3900) return toast("Слишком много подарков за раз: выключи часть");
+  if (!(await copy(payload))) return toast("Не удалось скопировать");
+  haptic("ok"); toast("Скопировано. Вставь в чат бота и отправь.");
+  setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}`), 600);
+}
+
+async function shareShowcase() {
+  const l = (S.catalog || []).filter((g) => g.owner && String(g.owner.uid) === S.uid);
+  if (!l.length) return toast("Сначала опубликуй подарки в каталог");
+  const link = `https://t.me/${CONFIG.botUsername}/${CONFIG.appShortName}?startapp=u_${S.uid}`;
+  await copy(link); haptic("ok"); toast("Ссылка на твою витрину скопирована");
+}
+
+/* ============================================================
+ * Витрина арендодателя по ссылке startapp=u_<uid>
+ * ============================================================ */
+async function renderShowcase() {
+  const uid = S.viewShowcase;
+  const lst = await getJSON(`data/listings/${uid}.json`);
+  const deny = await getJSON("denylist.json");
+  const blocked = deny && deny !== "404" && (deny.uids || []).map(String).includes(String(uid));
+  $("#topbar").innerHTML = `<h1>Витрина</h1><div class="tb-right"><button class="btn sec sm" id="home">Все подарки</button></div>`;
+  $("#home").onclick = () => { S.viewShowcase = null; setTab("market"); };
+  if (blocked) { $("#view").innerHTML = `<div class="empty"><b style="color:var(--danger)">Витрина заблокирована</b>Не переводите деньги этому владельцу.</div>`; return; }
+  if (!lst || lst === "404") { $("#view").innerHTML = `<div class="empty"><b>Витрина не найдена</b>Владелец ещё ничего не опубликовал.</div>`; return; }
+  const owner = { uid: String(lst.uid), name: lst.name, uname: lst.uname };
+  const gifts = (lst.gifts || []).map((g) => ({ ...g, owner }));
+  $("#view").innerHTML = `
+    <div class="p-head"><div class="avatar"><div>${esc((lst.name || "?").slice(0, 1).toUpperCase())}</div></div>
+      <div class="p-stats"><div><b>${gifts.length}</b><span>подарков</span></div><div></div><div></div></div></div>
+    <div class="p-body"><div class="p-name">${esc(lst.name || "Арендодатель")}</div>${lst.uname ? `<div class="p-handle">@${esc(lst.uname)}</div>` : ""}
+      ${lst.about ? `<div class="p-about">${esc(lst.about)}</div>` : ""}
+      <div style="margin-top:8px"><span class="vbadge ok">✓ Подарки сверены с профилем Telegram ботом @${esc(CONFIG.botUsername)}</span></div></div>
+    ${lst.uname ? `<div class="btnrow"><button class="btn sec" id="wr">Написать @${esc(lst.uname)}</button></div>` : ""}
+    <div style="height:10px"></div><div class="grid">${gifts.map(card).join("")}</div>
+    ${lst.req && lst.req.length ? `<div class="section-title">Реквизиты</div><div class="card">${lst.req.map((r) => `<div class="req-item"><div><div class="l">${esc(r.l || "Реквизит")}</div><div class="v">${esc(r.v)}</div></div><button class="btn out sm" data-c="${esc(r.v)}">Копировать</button></div>`).join("")}</div>` : ""}
+    <div class="hint" style="text-align:center;margin-top:14px"><button class="rlink" id="rep">Пожаловаться</button></div>`;
+  bindCards(gifts, $("#view"));
+  const wr = $("#wr"); if (wr) wr.onclick = () => openTg(`https://t.me/${lst.uname}`);
+  $$("[data-c]").forEach((b) => b.onclick = async () => { await copy(b.dataset.c); haptic("ok"); toast("Скопировано"); });
+  $("#rep").onclick = () => openTg(`https://t.me/${CONFIG.botUsername}?start=rp_${encodeURIComponent(uid)}_x`);
+}
+
+/* ============================================================
+ * init
  * ============================================================ */
 async function init() {
-  state.uid = currentUid();
+  $$(".tab").forEach((b) => b.addEventListener("click", () => { S.viewShowcase = null; setTab(b.dataset.tab); }));
+  const sp = tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param;
+  if (sp && sp.startsWith("u_")) S.viewShowcase = sp.slice(2);
 
-  const startParam = tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param;
-  if (startParam && startParam.startsWith("eyJ")) {
-    const dot = startParam.indexOf(".");
-    state.payloadStr = dot < 0 ? startParam : startParam.slice(0, dot);
-    state.sig = dot < 0 ? null : startParam.slice(dot + 1);
-    try {
-      state.showcase = JSON.parse(b64urlDecode(state.payloadStr));
-      state.mode = "storefront";
-    } catch (e) { state.mode = "editor"; }
-  }
-
-  $("#btnToEditor").addEventListener("click", async () => {
-    state.mode = "editor";
-    state.profile = (await loadKey(CONFIG.storageKey)) || defaultProfile();
-    state.terms = (await loadKey(CONFIG.termsKey)) || defaultTerms();
-    state.myGifts = await fetchMyGifts();
-    renderEditor();
-  });
-
-  $("#overlay").addEventListener("click", (e) => {
-    if (e.target === $("#overlay")) { $("#overlay").hidden = true; }
-  });
-
-  if (state.mode === "storefront") {
-    renderStorefront();
-  } else {
-    state.profile = (await loadKey(CONFIG.storageKey)) || defaultProfile();
-    state.terms = (await loadKey(CONFIG.termsKey)) || defaultTerms();
-    state.myGifts = await fetchMyGifts();
-    renderEditor();
-  }
+  $("#view").innerHTML = `<div class="empty">Загрузка…</div>`;
+  const [p, t, f] = await Promise.all([load(CONFIG.profileKey, null), load(CONFIG.termsKey, {}), load(CONFIG.favKey, {})]);
+  if (p) S.profile = { ...S.profile, ...p };
+  S.terms = t || {}; S.fav = f || {};
+  S.showcase = S.viewShowcase ? { uid: S.viewShowcase } : null;
+  setTab("market");
+  await Promise.all([loadCatalog(), loadMine(), loadOrders()]);
+  render();
 }
-
 document.addEventListener("DOMContentLoaded", init);
