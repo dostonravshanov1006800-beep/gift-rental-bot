@@ -193,12 +193,12 @@ async def refresh_user(session, uid) -> bool:
     return await repo.commit_files(session, files, f"bot: подарки {uid}")
 
 
-async def maybe_touch_user(session, uid):
-    """При любом сообщении от юзера обновить его подарки, но не чаще раза в 8с."""
+async def maybe_touch_user(session, uid, force=False):
+    """При любом сообщении от юзера обновить его подарки. Троттлинг 8с, кроме явного /start (force)."""
     if not uid or not repo.enabled:
         return
     now = time.time()
-    if now - _last_touch.get(uid, 0) < 8:
+    if not force and now - _last_touch.get(uid, 0) < 8:
         return
     _last_touch[uid] = now
     try:
@@ -655,7 +655,7 @@ async def process_update(session, upd):
     if uid:
         LAST_SEEN[uid] = time.time()
         asyncio.create_task(ensure_registered(session, from_user))
-        asyncio.create_task(maybe_touch_user(session, uid))
+        asyncio.create_task(maybe_touch_user(session, uid, force=text.startswith("/start")))
         if not text.startswith("/start"):
             asyncio.create_task(ensure_keyboard(session, chat_id, from_user))
     if text.startswith("/start"):

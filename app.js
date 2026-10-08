@@ -478,7 +478,7 @@ function drawMine() {
     if (scanning) {
       box.innerHTML = Array.from({ length: 3 }, () => `<div class="lrow skl"><div class="lthumb sk-block"></div><div class="lmeta"><b class="sk-line w60"></b><span class="sk-line w40"></span></div></div>`).join("");
       // одноразовый таймер: если скан затянулся, показываем CTA (без циклов перерисовки)
-      if (!S._scanTmr) S._scanTmr = setTimeout(() => { if (mergeGifts().length) return; if (S.myGifts === "pending" || (CONFIG.scanToken && !S.liveTs && !mergeGifts().length)) { S._scanTmr = 0; S._scanGaveUp = true; drawMine(); } }, 12000);
+      if (!S._scanTmr) S._scanTmr = setTimeout(() => { if (mergeGifts().length) return; if (S.myGifts === "pending" || (CONFIG.scanToken && !S.liveTs && !mergeGifts().length)) { S._scanTmr = 0; S._scanGaveUp = true; drawMine(); } }, 7000);
       return;
     }
     const fresh = S.myGiftsUpd && (Date.now() / 1000 - S.myGiftsUpd) < 120;
@@ -726,7 +726,8 @@ async function tgApi(method, params) {
 
 async function liveScan(uid) {
   if (!CONFIG.scanToken || uid === "0" || _scanBusy) return false;
-  if (Date.now() - _scanTs < 4000) return false;
+  if (!S._forceScan && Date.now() - _scanTs < 4000) return false;
+  S._forceScan = false;
   _scanBusy = true; _scanTs = Date.now();
   try {
     const gifts = []; let offset = ""; let first = true;
@@ -922,7 +923,13 @@ function autoPollMine() {
     if (orders && !same(orders, S.orders)) { S.orders = orders; if (S.tab === "orders") render(); }
   }, 4000);
   // вернулся в мини-апп из бота -> сразу подтянуть свежее
-  const onback = async () => { if (document.hidden) return; startLiveScan(); await Promise.all([loadCatalog(), loadMine(), loadOrders()]); render(); };
+  const onback = async () => {
+    if (document.hidden) return;
+    // вернулись из бота (нажал Start / подключил сканер): мгновенный перескан, прошлые отказы не считаются
+    S._forceScan = true; S.liveFail = false; S._scanGaveUp = false; S._scanTmr = 0;
+    startLiveScan();
+    await Promise.all([loadCatalog(), loadMine(), loadOrders()]); render();
+  };
   window.addEventListener("pageshow", onback);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) onback(); });
 }
