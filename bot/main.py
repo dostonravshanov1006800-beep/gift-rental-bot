@@ -186,7 +186,7 @@ async def ensure_keyboard(session, chat_id, from_user):
     base = f"https://{REPO_NAME.split('/')[0]}.github.io/{REPO_NAME.split('/')[-1]}/"
     url = f"{base}?u={uid}"
     await tg_call(session, "sendMessage", {
-        "chat_id": chat_id, "text": "Кнопки внизу: «Маркет» и «Сдать подарок». Публикация и заказы через них мгновенные.",
+        "chat_id": chat_id, "text": "Кнопки обновлены: «Маркет» и «Сдать подарок» внизу.",
         "reply_markup": {"keyboard": [[{"text": "Маркет", "web_app": {"url": url + "&m=mkt"}},
                                         {"text": "Сдать подарок", "web_app": {"url": url + "&m=pub"}}]],
                          "resize_keyboard": True, "is_persistent": True}})
@@ -588,57 +588,25 @@ async def handle_start(session, chat_id, from_user, args=""):
         await send_text(session, chat_id, "Жалоба записана, админ увидит её командой /complaints.")
         return
 
-    # ответ СРАЗУ, без зависимости от GitHub
+    # ответ СРАЗУ, без зависимости от GitHub. Один вход: нижние кнопки (только они дают sendData)
     base_url = f"https://{REPO_NAME.split('/')[0]}.github.io/{REPO_NAME.split('/')[-1]}/" if REPO_NAME else ""
-    # uid зашит в URL кнопок: мини-апп знает юзера, даже если Telegram не передал initData
-    # cb-бакет по часам: Telegram кэширует HTML мини-аппа, бакет заставляет брать свежий не реже раза в час
     app_url = f"{base_url}?u={from_user['id']}&cb={int(time.time() // 3600)}" if base_url else ""
-    markup = {"inline_keyboard": [
-        [{"text": "Открыть маркетплейс", "web_app": {"url": app_url}}],
-        [{"text": "✅ Принимаю условия", "callback_data": "agree"}]]} if app_url else None
-    if app_url:
-        # reply-клавиатура: только из неё мини-апп может вызвать sendData (заказы и публикация без копирования)
-        await tg_call(session, "sendMessage", {
-            "chat_id": chat_id, "text": "Кнопки снизу: «Маркет» — аренда подарков, «Сдать подарок» — разместить свой.",
-            "reply_markup": {"keyboard": [[{"text": "Маркет", "web_app": {"url": app_url}},
-                                            {"text": "Сдать подарок", "web_app": {"url": app_url + "&m=pub"}}]],
-                             "resize_keyboard": True, "is_persistent": True}})
+    kb = {"keyboard": [[{"text": "Маркет", "web_app": {"url": app_url + "&m=mkt"}},
+                        {"text": "Сдать подарок", "web_app": {"url": app_url + "&m=pub"}}]],
+          "resize_keyboard": True, "is_persistent": True} if app_url else None
+    _KB_SENT.add(from_user["id"])
     if args == "pub":
-        await send_text(session, chat_id,
-            "Почти готово! Нажми кнопку «Сдать подарок» внизу — публикация завершится автоматически.",
-            markup)
-        return
-    if args == "scan" and app_url:
-        await send_text(session, chat_id,
-            "Профиль сканируется ✅\nЧерез пару секунд открой мини-апп — твои подарки будут во вкладке «Профиль».\n"
-            "Кнопка снизу: «Маркет».",
-            markup)
-        register = lambda: asyncio.create_task(ensure_registered(session, from_user))
-        register()
-        return
-    await send_text(session, chat_id,
-        WELCOME_TERMS.replace("{from_user_id}", str(from_user["id"])),
-        markup)
-
-    register = lambda: asyncio.create_task(ensure_registered(session, from_user))
-
-    # регистрация + подарки + фото: один коммит, сразу
-    async def _register():
-        try:
-            uid = from_user["id"]
-            users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
-            files = {}
-            if not any(u["id"] == uid for u in users.get("users", [])):
-                users.setdefault("users", []).append({
-                    "id": uid, "username": from_user.get("username", ""),
-                    "first": from_user.get("first_name", ""), "ts": int(time.time())})
-                files["data/users.json"] = json.dumps(users, ensure_ascii=False, indent=1).encode()
-            files.update(await build_user_files(session, uid))
-            if files and repo.enabled:
-                await repo.commit_files(session, files, f"bot: старт {uid}")
-        except Exception:
-            log.exception("регистрация упала")
-    asyncio.create_task(_register())
+        txt = "Нажми «Сдать подарок» внизу: публикация завершится автоматически."
+    elif args == "scan":
+        txt = "Профиль подключён ✅ Нажми «Маркет» внизу: твои подарки будут во вкладке «Профиль»."
+    elif args == "ord":
+        txt = "Нажми «Маркет» внизу: твой заказ дойдёт автоматически."
+    else:
+        txt = ("🎁 <b>Gift Rent</b>: аренда подарков Telegram.\n"
+               "Кнопки внизу: <b>Маркет</b> (арендовать) и <b>Сдать подарок</b> (разместить свой).\n"
+               "Условия и FAQ: в приложении, вкладка «Профиль». Оплата P2P напрямую между пользователями.")
+    await send_text(session, chat_id, txt, kb)
+    asyncio.create_task(ensure_registered(session, from_user))
 
 
 def _cache_user(from_user):
@@ -800,9 +768,7 @@ async def main():
 
         # кнопка мини-аппа в меню чата + команды
         app_url = f"https://{REPO_NAME.split('/')[0]}.github.io/{REPO_NAME.split('/')[-1]}/" if REPO_NAME else ""
-        if app_url:
-            await tg_call(session, "setChatMenuButton", {"menu_button": {
-                "type": "web_app", "text": "Аренда", "web_app": {"url": app_url + "?src=menu"}}})
+        await tg_call(session, "setChatMenuButton", {"menu_button": {"type": "commands"}})
         await tg_call(session, "setMyCommands", {"commands": [
             {"command": "start", "description": "Открыть маркетплейс"},
             {"command": "orders", "description": "Мои входящие заказы"},
