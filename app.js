@@ -402,9 +402,12 @@ function drawScanState() {
   if (S.uid === "0") { el.innerHTML = ``; return; }
   if (CONFIG.scanToken) {
     if (!S.liveTs && !S.liveFail) { el.innerHTML = `<span class="spin"></span>Сканирую профиль Telegram…`; return; }
-    const age = Math.max(0, Math.round((Date.now() - S.liveTs) / 1000));
-    el.innerHTML = `<i class="dot-live"></i>Сканировано сейчас${age < 5 ? "" : " " + age + " с назад"}`;
-    return;
+    if (S.liveTs) {
+      const age = Math.max(0, Math.round((Date.now() - S.liveTs) / 1000));
+      el.innerHTML = `<i class="dot-live"></i>Сканировано сейчас${age < 5 ? "" : " " + age + " с назад"}`;
+      return;
+    }
+    // live-скан не удался (юзер не подключал скан-бота): показываем repo-статус ниже
   }
   const upd = S.myGiftsUpd;
   if (S.myGifts === "pending") { el.innerHTML = `<span class="spin"></span>Сканирую профиль Telegram…`; return; }
