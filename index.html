@@ -17,20 +17,20 @@
     <nav class="tabbar" id="tabbar">
       <button class="tab" data-tab="market">
         <svg viewBox="0 0 24 24"><path d="M5 8h14l-1 12H6L5 8z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></svg>
-        <span>Аренда</span>
+        <span data-i18n="tab_market">Аренда</span>
       </button>
       <button class="tab" data-tab="fav">
         <svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.600-7 10-7 10z"/></svg>
-        <span>Избранное</span>
+        <span data-i18n="tab_fav">Избранное</span>
       </button>
       <button class="tab" data-tab="orders">
         <svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4V5z"/></svg>
-        <span>Заказы</span>
+        <span data-i18n="tab_orders">Заказы</span>
         <i class="dot" id="ordersDot" hidden></i>
       </button>
       <button class="tab" data-tab="profile">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.400 3.600-7 8-7s8 2.600 8 7"/></svg>
-        <span>Профиль</span>
+        <span data-i18n="tab_profile">Профиль</span>
       </button>
     </nav>
 
@@ -40,7 +40,7 @@
     <div id="toast" class="toast" hidden></div>
   </div>
   <script src="app.js?v=1791485795"></script>
-  <button id="gadd" hidden aria-label="Добавить в аренду"><svg viewBox="0 0 24 24" width="26" height="26"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>Сдать подарок</button>
-  <div id="pubbar"><button class="btn" id="pub">Опубликовать</button></div>
+  <button id="gadd" hidden aria-label="Добавить в аренду"><svg viewBox="0 0 24 24" width="26" height="26"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg><span data-i18n="b_add">Сдать подарок</span></button>
+  <div id="pubbar"><button class="btn" id="pub" data-i18n="b_publish">Опубликовать</button></div>
 </body>
 </html>
