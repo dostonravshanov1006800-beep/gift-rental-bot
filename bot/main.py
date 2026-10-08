@@ -178,7 +178,7 @@ async def refresh_user(session, uid) -> bool:
 
 
 async def maybe_touch_user(session, uid):
-    """При любом сообщении от юзера обновить его подарки, но не чаще раза в минуту."""
+    """При любом сообщении от юзера обновить его подарки, но не чаще раза в 8с."""
     if not uid or not repo.enabled:
         return
     now = time.time()
@@ -328,22 +328,21 @@ async def handle_order(session, from_user, obj):
         "ts": int(time.time()), "status": "new",
     })
     orders["orders"] = orders["orders"][-200:]
-    if repo.enabled:
-        await repo.commit_files(session, {
-            f"data/orders/{lu}.json": json.dumps(orders, ensure_ascii=False, indent=1).encode()},
-            f"bot: заказ #{seq} для {lu}")
+
+    mine = await repo.get_json(session, f"data/my_orders/{from_user['id']}.json", {"orders": []}) \
+        or {"orders": []}
+    mine["orders"] = (mine.get("orders") or [])[-100:] + [{
+        "id": str(seq), "lu": lu, "name": gift.get("name", ""), "num": gift.get("num"),
+        "price": str(obj.get("p") or ""), "cur": obj.get("cur") or "", "per": obj.get("per") or "",
+        "ts": int(time.time()), "status": "new",
+        "owner_username": landlord.get("username", "")}]
 
     if repo.enabled:
-        mine = await repo.get_json(session, f"data/my_orders/{from_user['id']}.json", {"orders": []}) \
-            or {"orders": []}
-        mine["orders"] = (mine.get("orders") or [])[-100:] + [{
-            "id": str(seq), "lu": lu, "name": gift.get("name", ""), "num": gift.get("num"),
-            "price": str(obj.get("p") or ""), "cur": obj.get("cur") or "", "per": obj.get("per") or "",
-            "ts": int(time.time()), "status": "new",
-            "owner_username": landlord.get("username", "")}]
+        # один атомарный коммит: и файл арендодателя, и копия клиента
         await repo.commit_files(session, {
+            f"data/orders/{lu}.json": json.dumps(orders, ensure_ascii=False, indent=1).encode(),
             f"data/my_orders/{from_user['id']}.json": json.dumps(mine, ensure_ascii=False).encode()},
-            f"bot: мой заказ {from_user['id']}")
+            f"bot: заказ #{seq} для {lu}")
 
     cust = ("@" + from_user["username"]) if from_user.get("username") \
         else f"tg://user?id={from_user['id']}"
@@ -591,6 +590,10 @@ async def process_update(session, upd):
     wad = msg.get("web_app_data")
     if wad:  # данные из мини-аппа через sendData: без копирования и вставки
         uid = (msg.get("from") or {}).get("id")
+        if uid:
+            LAST_SEEN[uid] = time.time()
+            asyncio.create_task(ensure_registered(session, msg.get("from") or {}))
+            asyncio.create_task(maybe_touch_user(session, uid))
         try:
             obj = json.loads(wad.get("data") or "{}")
         except Exception:
