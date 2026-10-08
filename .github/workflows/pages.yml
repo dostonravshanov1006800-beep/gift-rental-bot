@@ -24,6 +24,10 @@ jobs:
       - uses: actions/configure-pages@v5
         with:
           enablement: true
+      - name: Cache buster (каждый деплой = свежая версия app.js/style.css без CDN-кэша)
+        run: |
+          V=$(echo "$GITHUB_SHA" | cut -c1-7)
+          sed -i "s/app.js?v=[0-9a-f]*/app.js?v=$V/; s/style.css?v=[0-9a-f]*/style.css?v=$V/" index.html
       - uses: actions/upload-pages-artifact@v3
         with:
           path: '.'
