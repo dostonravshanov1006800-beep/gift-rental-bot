@@ -118,11 +118,19 @@ async function loadOrders() {
 /* ============================================================
  * shell: tabs
  * ============================================================ */
+function openAddRent() {
+  if (S.uid === "0") return toast("Открой мини-апп через Telegram");
+  setTab("profile");
+  requestAnimationFrame(() => { const m = $("#mine"); if (m) m.scrollIntoView({ behavior: "smooth", block: "start" }); });
+  toast("Включи подарки, укажи цену и нажми «Опубликовать»");
+}
+
 function setTab(t) {
   S.tab = t;
   $$(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === t));
   render();
   window.scrollTo(0, 0);
+  const fab = $("#gadd"); if (fab) fab.hidden = !(t === "market" && !S.viewShowcase);
 }
 function render() {
   if (S.showcase && S.tab === "market" && S.viewShowcase) return renderShowcase();
@@ -444,6 +452,7 @@ async function renderShowcase() {
  * ============================================================ */
 async function init() {
   $$(".tab").forEach((b) => b.addEventListener("click", () => { S.viewShowcase = null; setTab(b.dataset.tab); }));
+  $("#gadd").onclick = openAddRent;
   const sp = tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param;
   if (sp && sp.startsWith("u_")) S.viewShowcase = sp.slice(2);
 
@@ -459,16 +468,33 @@ async function init() {
 }
 
 function autoPollMine() {
-  let ticks = 0;
-  const iv = setInterval(async () => {
-    ticks++;
-    if (ticks > 12 || S.uid === "0") { clearInterval(iv); return; }
+  const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
+  setInterval(async () => {
+    if (document.hidden) return;
+    // каталог: кто-то опубликовал/сменил цену -> обновляем ленту
+    const c = await getJSON("data/catalog.json");
+    const items = c && c !== "404" ? c.items || [] : [];
+    if (items.length || (S.catalog || []).length) {
+      if (!same(items, S.catalog)) {
+        S.catalog = items;
+        if (S.tab === "market" && !S.viewShowcase) render();
+        if (S.tab === "fav") render();
+      }
+    }
+    if (S.uid === "0") return;
     const d = await getJSON(`data/gifts/${S.uid}.json`);
     const arr = d && d !== "404" ? d.gifts || [] : null;
-    if (arr && JSON.stringify(arr) !== JSON.stringify(S.myGifts === "pending" ? "pending" : S.myGifts)) {
+    if (arr && !same(arr, S.myGifts === "pending" ? "pending" : S.myGifts)) {
       S.myGifts = arr;
       if (S.tab === "profile") { renderProfile(); toast("Подарки из профиля обновлены"); }
     }
+    const o = await getJSON(`data/orders/${S.uid}.json`);
+    const orders = o && o !== "404" ? o.orders || [] : null;
+    if (orders && !same(orders, S.orders)) { S.orders = orders; if (S.tab === "orders") render(); }
   }, 15000);
+  // вернулся в мини-апп из бота -> сразу подтянуть свежее
+  const onback = async () => { if (document.hidden) return; await Promise.all([loadCatalog(), loadMine(), loadOrders()]); render(); };
+  window.addEventListener("pageshow", onback);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) onback(); });
 }
 document.addEventListener("DOMContentLoaded", init);
