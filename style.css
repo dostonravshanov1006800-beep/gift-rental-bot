@@ -224,3 +224,18 @@ textarea { min-height: 64px; resize: vertical; }
 
 .detail-price { text-align: center; font-size: 16px; font-weight: 700; color: var(--btn); margin: 12px 0 14px; }
 .detail-price .sub { color: var(--muted); font-weight: 400; font-size: 13px; }
+
+/* ---------- Заказы ---------- */
+.order-card {
+  background: var(--card); border-radius: 12px; padding: 11px 13px; margin-bottom: 8px;
+}
+.order-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.order-head b { font-size: 14px; }
+.order-sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.order-client { font-size: 13px; margin-top: 4px; word-break: break-word; }
+.ost {
+  font-size: 11px; font-weight: 700; border-radius: 999px; padding: 3px 9px; flex: 0 0 auto;
+}
+.ost.new { background: rgba(106, 179, 243, 0.12); border: 1px solid var(--link); color: var(--link); }
+.ost.done { background: rgba(49, 196, 141, 0.12); border: 1px solid var(--ok); color: var(--ok); }
+.ost.cancelled { background: rgba(231, 76, 76, 0.10); border: 1px solid var(--danger); color: var(--danger); }

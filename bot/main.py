@@ -159,6 +159,104 @@ async def refresh_all_users(session):
                                     f"({len([k for k in changed if k.endswith('.json')])} профилей)")
 
 
+
+# ---------------------------------------------------------------- orders
+async def handle_order(session, from_user, obj):
+    """Клиент вставил пейлоад заказа: {o:1, lu, g, p, cur, per, c}."""
+    lu = str(obj.get("lu") or "")
+    gid = str(obj.get("g") or "")
+    if not lu or not gid:
+        await send_text(session, from_user["id"], "Заказ неполный: нет арендодателя или подарка.")
+        return
+
+    users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
+    landlord = next((u for u in users.get("users", []) if str(u["id"]) == lu), None)
+    if not landlord:
+        await send_text(session, from_user["id"], "Арендодатель не найден в системе.")
+        return
+
+    raw = await repo.get_raw(session, f"data/gifts/{lu}.json")
+    gifts = json.loads(raw).get("gifts", []) if raw else []
+    gift = next((g for g in gifts if g.get("gid") == gid), None)
+    if not gift:
+        await send_text(session, from_user["id"],
+            "Этого подарка нет в коллекции арендодателя. Витрина устарела.")
+        return
+
+    orders = await repo.get_json(session, f"data/orders/{lu}.json", {"orders": [], "seq": 0}) \
+        or {"orders": [], "seq": 0}
+    seq = int(orders.get("seq") or 0) + 1
+    orders["seq"] = seq
+    orders.setdefault("orders", []).append({
+        "id": str(seq),
+        "gid": gid, "name": gift.get("name", ""), "num": gift.get("num"),
+        "price": str(obj.get("p") or ""), "cur": obj.get("cur") or "",
+        "per": obj.get("per") or "",
+        "comment": (obj.get("c") or "")[:150],
+        "client_uid": from_user["id"],
+        "client_username": from_user.get("username", ""),
+        "client_first": from_user.get("first_name", ""),
+        "ts": int(time.time()), "status": "new",
+    })
+    orders["orders"] = orders["orders"][-200:]
+    if repo.enabled:
+        await repo.commit_files(session, {
+            f"data/orders/{lu}.json": json.dumps(orders, ensure_ascii=False, indent=1).encode()},
+            f"bot: заказ #{seq} для {lu}")
+
+    cust = ("@" + from_user["username"]) if from_user.get("username") \
+        else f"tg://user?id={from_user['id']}"
+    await send_text(session, int(lu),
+        f"📦 <b>Новый заказ #{seq}</b>\n"
+        f"🎁 {gift.get('name','')} #{gift.get('num','')}\n"
+        f"💰 {obj.get('p') or 'по договорённости'} {obj.get('cur','')} / {obj.get('per','')}\n"
+        f"👤 Клиент: {cust} (ID {from_user['id']})\n"
+        + (f"💬 {obj.get('c','')[:150]}\n" if obj.get("c") else "")
+        + f"\nЦену client указал сам: сверься с витриной. Ответь клиенту, договорись о залоге и сроках.\n"
+          f"/done {seq} — выполнен · /cancel {seq} — отмена")
+
+    who = ("@" + landlord["username"]) if landlord.get("username") else "арендодатель"
+    await send_text(session, from_user["id"],
+        f"✅ Заказ #{seq} отправлен {who}. Он свяжется с тобой в Telegram.")
+
+
+async def handle_orders_list(session, from_id):
+    orders = await repo.get_json(session, f"data/orders/{from_id}.json") or {"orders": []}
+    items = orders.get("orders", [])
+    if not items:
+        await send_text(session, from_id, "Заказов пока нет.")
+        return
+    lines = []
+    for it in items[-10:]:
+        ts = time.strftime("%d.%m %H:%M", time.gmtime(it.get("ts", 0)))
+        mark = {"new": "🆕", "done": "✅", "cancelled": "✖"}.get(it.get("status"), "•")
+        lines.append(f"{mark} #{it['id']} {it.get('name','')} #{it.get('num','')} "
+                     f"— {it.get('price') or '—'} {it.get('cur','')} ({ts})")
+    lines.append("\n/done <№> — выполнить, /cancel <№> — отменить")
+    await send_text(session, from_id, "\n".join(lines))
+
+
+async def handle_order_status(session, from_id, oid, status):
+    path = f"data/orders/{from_id}.json"
+    orders = await repo.get_json(session, path) or {"orders": []}
+    items = orders.get("orders", [])
+    it = next((o for o in items if str(o.get("id")) == str(oid)), None)
+    if not it:
+        await send_text(session, from_id, f"Заказ #{oid} не найден.")
+        return
+    it["status"] = status
+    if repo.enabled:
+        await repo.commit_files(session, {path: json.dumps(orders, ensure_ascii=False, indent=1).encode()},
+                                f"bot: заказ #{oid} -> {status}")
+    note = "выполнен" if status == "done" else "отменён"
+    await send_text(session, from_id, f"Заказ #{oid}: {note}.")
+    try:
+        await send_text(session, int(it.get("client_uid")),
+            f"Заказ #{oid} ({it.get('name','')} #{it.get('num','')}) {note} арендодателем.")
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------- verification
 async def handle_verify(session, chat_id, from_id, text: str):
     """Юзер присылает пейлоад витрины (base64url) или ссылку с startapp=.
@@ -313,11 +411,25 @@ async def process_update(session, upd):
         rest = text[len("/verify"):].strip()
         await handle_verify(session, chat_id, uid, rest or text)
     elif text.startswith("eyJ"):
-        await handle_verify(session, chat_id, uid, text)
+        try:
+            obj = json.loads(b64url_decode(text.strip().split(".")[0]))
+        except Exception:
+            await send_text(session, chat_id, "Пейлоад битый, не декодируется.")
+            return
+        if obj.get("o") == 1:
+            await handle_order(session, from_user, obj)
+        else:
+            await handle_verify(session, chat_id, uid, text)
     elif text.startswith("/block"):
         await handle_block(session, chat_id, uid, text.split(maxsplit=1)[1] if len(text.split()) > 1 else "")
     elif text.startswith("/complaints"):
         await handle_complaints(session, chat_id, uid)
+    elif text.startswith("/orders"):
+        await handle_orders_list(session, uid)
+    elif text.startswith("/done"):
+        await handle_order_status(session, uid, text.split()[-1] if len(text.split()) > 1 else "", "done")
+    elif text.startswith("/cancel"):
+        await handle_order_status(session, uid, text.split()[-1] if len(text.split()) > 1 else "", "cancelled")
 
 
 async def main():

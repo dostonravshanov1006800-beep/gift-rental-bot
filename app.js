@@ -287,6 +287,11 @@ function renderEditor() {
     </div>
 
     <div class="section">
+      <div class="section-title">Заказы на аренду</div>
+      <div id="orders_box"></div>
+    </div>
+
+    <div class="section">
       <div class="section-title">Мои подарки (реальные, из профиля Telegram)</div>
       <div id="gifts_stats"></div>
       <div class="field" id="gifts_search_box" style="margin-bottom:10px">
@@ -320,6 +325,7 @@ function renderEditor() {
 
   renderRequisites();
   renderMyGifts();
+  renderOrders();
 
   const action = async () => {
     const payload = buildPayloadString();
@@ -486,6 +492,54 @@ function renderMyGifts() {
     row.querySelector(".gt-cur").addEventListener("change", (e) => setTerm("cur", e.target.value));
     row.querySelector(".gt-per").addEventListener("change", (e) => setTerm("per", e.target.value));
     row.querySelector(".gt-av").addEventListener("change", (e) => setTerm("av", e.target.checked));
+  });
+}
+
+
+/* ============================================================
+ * Заказы (от бота)
+ * ============================================================ */
+async function fetchOrders() {
+  const uid = state.uid;
+  if (!uid || uid === "0") return null;
+  try {
+    const res = await fetch(`data/orders/${uid}.json?t=${Date.now()}`, { cache: "no-store" });
+    if (res.status === 404) return { orders: [] };
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) { return null; }
+}
+
+function renderOrders() {
+  const box = $("#orders_box");
+  if (!box) return;
+  box.innerHTML = `<div class="empty">Загрузка заказов...</div>`;
+  fetchOrders().then((d) => {
+    const b = $("#orders_box");
+    if (!b) return;
+    if (!d) { b.innerHTML = `<div class="empty">Заказы недоступны прямо сейчас.</div>`; return; }
+    const items = (d.orders || []).slice().reverse();
+    if (!items.length) {
+      b.innerHTML = `<div class="empty">Заказов пока нет. Отправь витрину клиентам: они жмут «Заказать аренду», ты получаешь уведомление от бота.</div>`;
+      return;
+    }
+    b.innerHTML = items.map((it) => {
+      const st = it.status === "done" ? `<span class="ost done">выполнен</span>`
+        : it.status === "cancelled" ? `<span class="ost cancelled">отменён</span>`
+        : `<span class="ost new">новый</span>`;
+      const cust = it.client_username ? "@" + esc(it.client_username) : "ID " + esc(it.client_uid);
+      const ts = new Date((it.ts || 0) * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+      return `
+        <div class="order-card">
+          <div class="order-head">
+            <b>№${esc(it.id)} · ${esc(it.name || "")} #${esc(it.num ?? "")}</b>
+            ${st}
+          </div>
+          <div class="order-sub">${esc(it.price ? fmtPrice(it.price) + " " + it.cur + " / " + it.per : "по договорённости")} · ${esc(ts)}</div>
+          <div class="order-client">Клиент: ${cust}${it.comment ? ` · «${esc(it.comment)}»` : ""}</div>
+        </div>`;
+    }).join("") +
+    `<div class="hint">Статусы меняются в боте: /orders — список, /done № — выполнен, /cancel № — отменён.</div>`;
   });
 }
 
@@ -694,9 +748,13 @@ function openGiftDetail(idx) {
       ${g.p ? `${esc(fmtPrice(g.p))} ${esc(g.cur || "")} <span class="sub">/ ${esc(g.per || "")}</span>`
              : "Цена по договорённости"}
     </div>
+    <div class="field" style="margin:12px 0 4px">
+      <label>Комментарий к заказу (необязательно, до 80 символов)</label>
+      <input type="text" id="orderComment" maxlength="80" placeholder="На какой срок, вопросы...">
+    </div>
     <div class="fab-row">
+      <button class="btn" id="detailOrder">Заказать аренду</button>
       <button class="btn secondary" id="detailNft">Ссылка на NFT</button>
-      ${state.showcase.uname ? `<button class="btn" id="detailWrite">Написать владельцу</button>` : ""}
     </div>
     <div class="hint" style="text-align:center; margin-top:8px">
       Подарок и атрибуты сверены с профилем Telegram при верификации витрины.
@@ -712,6 +770,27 @@ function openGiftDetail(idx) {
   });
   const w = $("#detailWrite");
   if (w) w.addEventListener("click", () => openTg(`https://t.me/${encodeURIComponent(state.showcase.uname)}`));
+
+  $("#detailOrder").addEventListener("click", async () => {
+    const g2 = g;
+    const comment = ($("#orderComment") && $("#orderComment").value || "").slice(0, 80);
+    const orderObj = {
+      o: 1,
+      lu: String(state.showcase.uid || ""),
+      g: g2.g || "",
+      p: g2.p || "",
+      cur: g2.cur || "",
+      per: g2.per || "",
+      c: comment,
+    };
+    const payload = b64urlEncode(JSON.stringify(orderObj));
+    const ok = await copyText(payload);
+    if (!ok) { toast("Не удалось скопировать заказ, попробуй ещё раз"); return; }
+    haptic("success");
+    toast("Заказ скопирован. Вставь его в чат бота и отправь.");
+    setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}`), 700);
+    $("#overlay").hidden = true;
+  });
 }
 
 /* ---------- Проверка безопасности ---------- */
