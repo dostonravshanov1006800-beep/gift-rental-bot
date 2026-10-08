@@ -489,11 +489,10 @@ function drawMine() {
     const t = S.terms[g.gid] || {};
     const listed = listedIds.has(g.gid);
     const c1 = hex(g.cc) || "#5aa7e0", c2 = hex(g.ec) || "#2b3f66";
-    return `<div class="lrow" data-g="${esc(g.gid)}">
+    return `<div class="lrow ${listed ? "is-listed" : ""}" data-g="${esc(g.gid)}">
       <div class="lthumb" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : repoIds.has(g.gid) && g.th_fuid ? `<img src="assets/gifts/${esc(g.th_fuid)}.webp" alt="" onerror="this.remove()">` : g.th_fuid ? `<img data-livethumb="${esc(g.gid)}" alt="">` : "🎁"}</div>
-      <div class="lmeta"><b>${esc(dname(g))}${g.num != null ? " #" + esc(g.num) : ""}</b><span>${esc(g.model || (g.stars ? g.stars + " ★" : ""))}${g.mr ? " · " + pct(g.mr) : ""}</span>
-        <i class="st ${listed ? "on" : "off"}">${listed ? "в аренде" : "не в аренде"}</i></div>
-      ${listed ? `<button class="btn out sm unl" data-unl="${esc(g.gid)}" style="margin-right:8px;white-space:nowrap">Снять с аренды</button>` : ""}
+      <div class="lmeta"><b>${esc(dname(g))}${g.num != null ? " #" + esc(g.num) : ""}${g.qty > 1 ? ` <em class="qty">×${g.qty}</em>` : ""}</b><span>${esc(g.model || (g.stars ? g.stars + " ★" : ""))}${g.mr ? " · " + pct(g.mr) : ""}</span></div>
+      ${listed ? `<button class="unl" data-unl="${esc(g.gid)}">Снять</button>` : ""}
       <label class="switch"><input type="checkbox" ${t.on ? "checked" : ""}><i></i></label>
     </div>
     <div class="pform" data-pf="${esc(g.gid)}" ${t.on ? "" : "hidden"} style="padding:0 14px 12px;border-bottom:1px solid var(--line)">
@@ -575,6 +574,14 @@ function buildListing() {
 // (3) ждём подтверждения из каталога, (4) если не пришло — честный фолбэк, а не вечное «Публикую…».
 // sendData по докам Telegram работает только при запуске с keyboard button и ЗАКРЫВАЕТ мини-апп.
 // Надёжный признак доставки один: апп закрылся. Если через 1.6с он ещё жив, доставки не было.
+// подтверждение: каталог (источник правды) совпал с тем, что отправили
+function confirmPublished() {
+  if (!S._pubWant && S._pubWant !== "") return;
+  if (myCatalogKey() !== S._pubWant) return;
+  S._pubWant = null; haptic("ok");
+  toast(S._pubWasEmpty ? "Снято с аренды" : "Опубликовано в каталоге");
+  const btn = $("#pub"); if (btn) btn.classList.remove("busy");
+}
 const _canSendData = () => !!(tg && typeof tg.sendData === "function");
 function myCatalogKey() { return (S.catalog || []).filter((g) => g.owner && String(g.owner.uid) === S.uid).map((g) => g.g + ":" + g.p + g.cur + g.per).sort().join("|"); }
 
@@ -594,7 +601,7 @@ async function publish(force) {
     return { g: g.g, n: k.name || "", m: k.model || "", s: k.symbol || "", num: k.num, cc: k.cc, ec: k.ec, mr: k.mr, sr: k.sr, br: k.br,
       b: k.backdrop || "", t: k.th_fuid ? `assets/gifts/${k.th_fuid}.webp` : "", p: g.p, cur: g.cur, per: g.per, ts: Math.floor(Date.now() / 1000), owner: me, _local: 1 };
   }));
-  S._pubWant = want; S._pubAt = Date.now();
+  S._pubWant = want; S._pubAt = Date.now(); S._pubWasEmpty = !obj.gifts.length;
   if (btn) btn.classList.add("busy");
   haptic("ok"); toast("Публикую…");
   if (S.tab === "profile") drawMine();
@@ -698,17 +705,24 @@ async function thumbUrl(g) {
   return p;
 }
 
+// одинаковые обычные подарки (общий gid типа) = одна строка с количеством; NFT уникальны по имени
+function groupGifts(list) {
+  const m = new Map();
+  for (const g of list) {
+    const k = g.gid;
+    if (m.has(k)) m.get(k).qty += 1; else m.set(k, { ...g, qty: 1 });
+  }
+  return [...m.values()];
+}
 function mergeGifts() {
   // прямой скан приоритетнее: он свежее репо-данных
   const live = S.liveGifts;
-  if (!Array.isArray(live) || !live.length) return Array.isArray(S.myGifts) ? S.myGifts : [];
-  const byGid = {};
-  (Array.isArray(S.myGifts) ? S.myGifts : []).forEach((g) => { byGid[g.gid] = g; });
-  return live.map((g) => {
-    const repo = byGid[g.gid];
-    if (repo && repo.t) return { ...g, t: repo.t };
-    return g;
-  });
+  const src = (!Array.isArray(live) || !live.length) ? (Array.isArray(S.myGifts) ? S.myGifts : []) : (() => {
+    const byGid = {};
+    (Array.isArray(S.myGifts) ? S.myGifts : []).forEach((g) => { byGid[g.gid] = g; });
+    return live.map((g) => { const repo = byGid[g.gid]; return repo && repo.t ? { ...g, t: repo.t } : g; });
+  })();
+  return groupGifts(src);
 }
 
 /* ============================================================
@@ -795,6 +809,7 @@ function autoPollMine() {
         S.catalog = items;
         if (S.tab === "market" && !S.viewShowcase) render();
         if (S.tab === "fav") render();
+        if (S.tab === "profile") { renderProfile(); confirmPublished(); }
       }
     }
     const hb = await getJSON("data/heartbeat.json"); if (hb && hb !== "404" && hb.ts) S.hb = hb.ts;

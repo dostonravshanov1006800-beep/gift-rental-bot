@@ -366,3 +366,12 @@ select.inp { appearance: none; -webkit-appearance: none; }
 .lmeta .st { display: inline-block; margin-top: 4px; padding: 2px 7px; border-radius: 99px; font-size: 10.5px; font-weight: 700; font-style: normal; letter-spacing: .2px; text-transform: uppercase; }
 .lmeta .st.on { background: rgba(52, 209, 123, .14); color: var(--ok, #34d17b); }
 .lmeta .st.off { background: var(--bg-card); color: var(--muted); border: 1px solid var(--line); }
+
+/* строка подарка: статус цветом рамки и компактная кнопка, без бейджа, ломавшего вёрстку */
+.lrow.is-listed .lthumb { box-shadow: 0 0 0 2px var(--ok, #34d17b); }
+.lrow.is-listed .lmeta span::after { content: "  ·  сдаётся"; color: var(--ok, #34d17b); font-weight: 600; }
+.lmeta .qty { font-style: normal; font-weight: 700; color: var(--accent); margin-left: 4px; }
+.unl { flex: none; margin-right: 10px; padding: 6px 12px; border-radius: 99px; font-size: 12.5px; font-weight: 600; color: var(--text); background: transparent; border: 1px solid var(--line-strong); white-space: nowrap; cursor: pointer; }
+.unl:active { transform: scale(.95); }
+.lmeta { min-width: 0; flex: 1; }
+.lmeta b, .lmeta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
