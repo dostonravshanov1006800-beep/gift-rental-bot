@@ -9,6 +9,7 @@ const CONFIG = {
   profileKey: "gr_profile_v3",
   termsKey: "gr_terms_v3",
   favKey: "gr_fav_v3",
+  scanToken: "", // токен отдельного скан-бота (только getUserGifts/getFile); НЕ основной бот
   verifyKey: {"kty":"EC","crv":"P-256","x":"GQ1mE9ZzXYcYxW6yLoBD3lzMYOpQd60ntJgUPdY7nLo","y":"5JBfRbOwbZD4bb1yEutCIQeFw3eB7inih9agTkGLs3g","key_ops":["verify"],"ext":true},
 };
 const PERIODS = ["час", "день", "неделя", "месяц"];
@@ -319,6 +320,13 @@ function renderOrders() {
  * ============================================================ */
 function myListedCount() { return Array.isArray(S.myGifts) ? S.myGifts.filter((g) => (S.terms[g.gid] || {}).on).length : 0; }
 
+async function startLiveScan() {
+  if (!CONFIG.scanToken || S.uid === "0") return;
+  const changed = await liveScan(S.uid);
+  if (S.tab === "profile") { if (changed) renderProfile(); else drawScanState(); }
+}
+setInterval(() => { if (!document.hidden && S.tab === "profile") startLiveScan(); }, 15000);
+
 function renderProfile() {
   const u = S.user || {};
   const name = S.profile.name || [u.first_name, u.last_name].filter(Boolean).join(" ") || "Пользователь";
@@ -351,6 +359,7 @@ function renderProfile() {
     <div class="hint">Включи переключатель, укажи цену и срок. Бот сверит подарки с твоим профилем, публикация мгновенная.</div>
     <div class="btnrow"><button class="btn" id="pub">Опубликовать</button></div>`;
   $("#cid").onclick = async () => { await copy(S.uid); haptic("ok"); toast("ID скопирован"); };
+  startLiveScan();
   $("#edit").onclick = openEdit;
   $("#share").onclick = shareShowcase;
   $("#pub").onclick = publish;
@@ -371,11 +380,15 @@ function drawReq() {
 
 function drawScanState() {
   const el = $("#scanstate"); if (!el) return;
-  const upd = S.myGiftsUpd;
-  if (S.myGifts === "pending") {
-    el.innerHTML = `<span class="spin"></span>Сканирую профиль Telegram…`;
+  if (S.uid === "0") { el.innerHTML = ``; return; }
+  if (CONFIG.scanToken) {
+    if (!S.liveTs) { el.innerHTML = `<span class="spin"></span>Сканирую профиль Telegram…`; return; }
+    const age = Math.max(0, Math.round((Date.now() - S.liveTs) / 1000));
+    el.innerHTML = `<i class="dot-live"></i>Сканировано сейчас${age < 5 ? "" : " " + age + " с назад"}`;
     return;
   }
+  const upd = S.myGiftsUpd;
+  if (S.myGifts === "pending") { el.innerHTML = `<span class="spin"></span>Сканирую профиль Telegram…`; return; }
   if (!upd) { el.innerHTML = ``; return; }
   const age = Math.max(0, Math.round(Date.now() / 1000 - upd));
   el.innerHTML = age < 60
@@ -386,13 +399,14 @@ function drawScanState() {
 function drawMine() {
   const box = $("#mine"); if (!box) return; drawScanState();
   if (S.uid === "0") { box.innerHTML = `<div class="empty">Открой мини-апп через Telegram.</div>`; return; }
-  if (S.myGifts === "pending") { box.innerHTML = `<div class="empty"><b>Подарки ещё не загружены</b>Нажми /start в боте: подарки подтянутся за несколько секунд.</div>`; return; }
-  if (!S.myGifts || !S.myGifts.length) { box.innerHTML = `<div class="empty"><b>Нет уникальных подарков</b>Бот видит только подарки, открытые в твоём профиле.</div>`; return; }
-  box.innerHTML = S.myGifts.map((g) => {
+  const list = mergeGifts();
+  if (!list.length) { box.innerHTML = `<div class="empty"><b>Сканирую профиль…</b>Подарки появятся через пару секунд.</div>`; return; }
+  const repoIds = new Set((Array.isArray(S.myGifts) ? S.myGifts : []).map((g) => g.gid));
+  box.innerHTML = list.map((g) => {
     const t = S.terms[g.gid] || {};
     const c1 = hex(g.cc) || "#5aa7e0", c2 = hex(g.ec) || "#2b3f66";
     return `<div class="lrow" data-g="${esc(g.gid)}">
-      <div class="lthumb" style="--c1:${c1};--c2:${c2}">${g.th_fuid ? `<img src="assets/gifts/${esc(g.th_fuid)}.webp" alt="" onerror="this.remove()">` : "🎁"}</div>
+      <div class="lthumb" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : repoIds.has(g.gid) && g.th_fuid ? `<img src="assets/gifts/${esc(g.th_fuid)}.webp" alt="" onerror="this.remove()">` : g.th_fuid ? `<img data-livethumb="${esc(g.gid)}" alt="">` : "🎁"}</div>
       <div class="lmeta"><b>${esc(gname(g.name) || "Подарок")}${g.num != null ? " #" + esc(g.num) : ""}</b><span>${esc(g.model || (g.stars ? g.stars + " ★" : ""))}${g.mr ? " · " + pct(g.mr) : ""}</span></div>
       <label class="switch"><input type="checkbox" ${t.on ? "checked" : ""}><i></i></label>
     </div>
@@ -402,6 +416,17 @@ function drawMine() {
         <select class="inp" data-r>${PERIODS.map((c) => `<option ${c === (t.per || "день") ? "selected" : ""}>${c}</option>`).join("")}</select></div>
     </div>`;
   }).join("");
+  // подаркам только из live-скана: прямая ссылка на стикер через getFile
+  $$("img[data-livethumb]", box).forEach(async (el) => {
+    const gid = el.dataset.livethumb;
+    const g = list.find((x) => x.gid === gid);
+    if (!g) return;
+    let u = await thumbUrl(g);
+    if (!u) { await new Promise((r) => setTimeout(r, 900)); u = await thumbUrl(g); }
+    // дубликат-подарки имеют один gid: ставим на сам элемент, фолбэк по DOM — на случай перерисовки
+    if (u && el.isConnected) el.src = u;
+    else { const cur = box.querySelector(`img[data-livethumb="${CSS.escape(gid)}"]`); if (u && cur) cur.src = u; else if (cur) cur.remove(); }
+  });
   $$(".lrow", box).forEach((row) => {
     const gid = row.dataset.g; const pf = $(`[data-pf="${CSS.escape(gid)}"]`, box);
     const t = () => (S.terms[gid] = S.terms[gid] || {});
@@ -429,7 +454,7 @@ function openEdit() {
 }
 
 function buildListing() {
-  const gifts = (Array.isArray(S.myGifts) ? S.myGifts : []).filter((g) => (S.terms[g.gid] || {}).on).map((g) => {
+  const gifts = mergeGifts().filter((g) => (S.terms[g.gid] || {}).on).map((g) => {
     const t = S.terms[g.gid]; return { g: g.gid, p: t.p || "", cur: t.cur || "UZS", per: t.per || "день" };
   });
   const u = S.user || {};
@@ -459,6 +484,93 @@ async function shareShowcase() {
   if (!l.length) return toast("Сначала опубликуй подарки в каталог");
   const link = `https://t.me/${CONFIG.botUsername}/${CONFIG.appShortName}?startapp=u_${S.uid}`;
   await copy(link); haptic("ok"); toast("Ссылка на твою витрину скопирована");
+}
+
+/* ============================================================
+ * Прямой скан профиля: getUserGifts из клиента (любой юзер, без /start)
+ * ============================================================ */
+let _scanBusy = false, _scanTs = 0, _fileCache = JSON.parse(localStorage.getItem("gr_filecache") || "{}");
+
+async function tgApi(method, params) {
+  const q = new URLSearchParams({ ...params }).toString();
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${CONFIG.scanToken}/${method}?${q}`);
+    const d = await r.json();
+    return d && d.ok ? d.result : null;
+  } catch (e) { return null; }
+}
+
+async function liveScan(uid) {
+  if (!CONFIG.scanToken || uid === "0" || _scanBusy) return false;
+  if (Date.now() - _scanTs < 9000) return false;
+  _scanBusy = true; _scanTs = Date.now();
+  try {
+    const gifts = []; let offset = "";
+    for (let i = 0; i < 20; i++) {
+      const res = await tgApi("getUserGifts", { user_id: uid, offset, limit: 100 });
+      if (!res) break;
+      for (const g of (res.gifts || [])) {
+        if (g.is_burned) continue;
+        const u = g.gift || {};
+        if (g.type !== "unique") {
+          const st = (u.sticker || {}).thumbnail || {};
+          gifts.push({ gid: u.id || "", name: u.title || "", num: null,
+            model: "", symbol: "", backdrop: "", cc: null, ec: null, mr: null, sr: null, br: null,
+            th_fuid: st.file_unique_id, th_fid: st.file_id, p: g.type, stars: u.star_count });
+          continue;
+        }
+        const model = u.model || {}, symbol = u.symbol || {}, backdrop = u.backdrop || {};
+        const colors = backdrop.colors || {};
+        const thumb = ((model.sticker || {}).thumbnail) || {};
+        gifts.push({ gid: u.name || `${u.gift_id}#${u.number}`, name: u.base_name || "",
+          uniq: u.name || "", num: u.number,
+          model: model.name || "", symbol: symbol.name || "", backdrop: backdrop.name || "",
+          cc: colors.center_color, ec: colors.edge_color,
+          mr: model.rarity_per_mille, sr: symbol.rarity_per_mille, br: backdrop.rarity_per_mille,
+          th_fuid: thumb.file_unique_id, th_fid: thumb.file_id, p: "unique" });
+      }
+      offset = res.next_offset;
+      if (!offset) break;
+    }
+    const key = (l) => l.map((g) => g.gid + "#" + g.num).sort().join("|");
+    const changed = !Array.isArray(S.liveGifts) || key(gifts) !== key(S.liveGifts);
+    if (gifts.length) {
+      S.liveGifts = gifts; S.liveTs = Date.now();
+      try { localStorage.setItem("gr_filecache", JSON.stringify(_fileCache)); } catch (e) {}
+    }
+    return changed;
+  } finally { _scanBusy = false; }
+}
+
+// прямая ссылка на стикер: getFile + file path (через скан-бот); дедупликация одновременных запросов
+const _inflight = {};
+async function thumbUrl(g) {
+  if (g._t) return g._t;
+  if (g.th_fuid && _fileCache[g.th_fuid]) return g._t = _fileCache[g.th_fuid];
+  if (!CONFIG.scanToken || !g.th_fid) return null;
+  if (g.th_fuid && _inflight[g.th_fuid]) return _inflight[g.th_fuid];
+  const p = (async () => {
+    const r = await tgApi("getFile", { file_id: g.th_fid });
+    if (!r || !r.file_path) return null;
+    const url = `https://api.telegram.org/file/bot${CONFIG.scanToken}/${r.file_path}`;
+    if (g.th_fuid) _fileCache[g.th_fuid] = url;
+    return url;
+  })();
+  if (g.th_fuid) { _inflight[g.th_fuid] = p; try { const u = await p; if (u) g._t = u; } finally { delete _inflight[g.th_fuid]; } return g._t || await p; }
+  return p;
+}
+
+function mergeGifts() {
+  // прямой скан приоритетнее: он свежее репо-данных
+  const live = S.liveGifts;
+  if (!Array.isArray(live) || !live.length) return Array.isArray(S.myGifts) ? S.myGifts : [];
+  const byGid = {};
+  (Array.isArray(S.myGifts) ? S.myGifts : []).forEach((g) => { byGid[g.gid] = g; });
+  return live.map((g) => {
+    const repo = byGid[g.gid];
+    if (repo && repo.t) return { ...g, t: repo.t };
+    return g;
+  });
 }
 
 /* ============================================================

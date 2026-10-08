@@ -489,8 +489,10 @@ async def handle_start(session, chat_id, from_user, args=""):
         f"Твой ID: <code>{from_user['id']}</code>",
         markup)
 
+    register = lambda: asyncio.create_task(ensure_registered(session, from_user))
+
     # регистрация + подарки + фото: один коммит, сразу
-    async def register():
+    async def _register():
         try:
             uid = from_user["id"]
             users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
@@ -505,7 +507,25 @@ async def handle_start(session, chat_id, from_user, args=""):
                 await repo.commit_files(session, files, f"bot: старт {uid}")
         except Exception:
             log.exception("регистрация упала")
-    asyncio.create_task(register())
+    asyncio.create_task(_register())
+
+
+async def ensure_registered(session, from_user):
+    """Любое сообщение от юзера -> он в users.json (каталог его увидит)."""
+    if not from_user or "id" not in from_user or not repo.enabled:
+        return
+    try:
+        users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
+        if any(u["id"] == from_user["id"] for u in users.get("users", [])):
+            return
+        users.setdefault("users", []).append({
+            "id": from_user["id"], "username": from_user.get("username", ""),
+            "first": from_user.get("first_name", ""), "ts": int(time.time())})
+        await repo.commit_files(session, {
+            "data/users.json": json.dumps(users, ensure_ascii=False, indent=1).encode()},
+            f"bot: регистрация {from_user['id']}")
+    except Exception:
+        log.exception("регистрация упала")
 
 
 async def handle_block(session, chat_id, from_id, arg):
@@ -567,6 +587,7 @@ async def process_update(session, upd):
         return
     if uid:
         LAST_SEEN[uid] = time.time()
+        asyncio.create_task(ensure_registered(session, from_user))
         asyncio.create_task(maybe_touch_user(session, uid))
     if text.startswith("/start"):
         args = text.split(maxsplit=1)[1] if len(text.split()) > 1 else ""
