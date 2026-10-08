@@ -104,7 +104,14 @@ function parseTgUser() {
   } catch (e) {}
   return u && u.id ? u : null;
 }
-const tgUser = parseTgUser();
+const tgUser = parseTgUser() || (function () {
+  try {
+    const qu = new URLSearchParams(location.search).get("u");
+    if (qu && /^\d{5,14}$/.test(qu)) return { id: Number(qu), first_name: "", username: "" };
+    const ls = localStorage.getItem("gr_lastuser"); if (ls) { const o = JSON.parse(ls); if (o && o.id) return o; }
+  } catch (e) {}
+  return null;
+})();
 // SDK в вебвью (особенно Android, запуск с menu button) иногда отдаёт initData с задержкой:
 // пересчитываем пользователя в любой момент, а не один раз на загрузке модуля
 function getTg() { return window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null; }
@@ -116,7 +123,13 @@ function parseTgUserLive() {
   if (!u) { try { const h = new URLSearchParams(location.hash.replace(/^#/, "")).get("tgWebAppData"); if (h) u = fromQS(h); } catch (e) {} }
   if (!u) { try { const q = new URLSearchParams(location.search).get("tgWebAppData"); if (q) u = fromQS(q); } catch (e) {} }
   if (!u) { try { const s = sessionStorage.getItem("gr_tguser"); if (s) u = JSON.parse(s); } catch (e) {} }
-  if (u && u.id) { try { sessionStorage.setItem("gr_tguser", JSON.stringify(u)); } catch (e) {} return u; }
+  if (u && u.id) { try { sessionStorage.setItem("gr_tguser", JSON.stringify(u)); localStorage.setItem("gr_lastuser", JSON.stringify({ id: u.id, first_name: u.first_name || "", username: u.username || "", photo_url: u.photo_url || "" })); } catch (e) {} return u; }
+  // нет данных от Telegram (запуск по прямой ссылке / старый вебвью): uid из персональной кнопки бота (?u=) или запомненный на устройстве
+  try {
+    const qu = new URLSearchParams(location.search).get("u");
+    if (qu && /^\d{5,14}$/.test(qu)) { const o = { id: Number(qu), first_name: "", username: "" }; localStorage.setItem("gr_lastuser", JSON.stringify(o)); return o; }
+    const ls = localStorage.getItem("gr_lastuser"); if (ls) { const o = JSON.parse(ls); if (o && o.id) return o; }
+  } catch (e) {}
   return null;
 }
 const S = {
@@ -178,7 +191,7 @@ async function loadOrders() {
 const _pubMode = new URLSearchParams(location.search).get("m") === "pub";
 
 function openAddRent() {
-  if (S.uid === "0") return toast("Открой мини-апп через Telegram");
+  if (S.uid === "0") { toast("Нужен вход через бота"); setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}?start=login`), 400); return; }
   setTab("profile");
   requestAnimationFrame(() => { const m = $("#mine"); if (m) m.scrollIntoView({ behavior: "smooth", block: "start" }); });
   toast("Включи подарки, укажи цену и нажми «Опубликовать»");
@@ -403,7 +416,7 @@ function renderProfile() {
     <div class="hint">Включи переключатель, укажи цену и срок. Бот сверит подарки с твоим профилем, публикация мгновенная.</div>
     <div class="btnrow"><button class="btn" id="pub">Опубликовать</button></div>`;
   $("#cid").onclick = async () => {
-    if (S.uid === "0") { const ok = await applyTgUser(); if (!ok) toast("Telegram не передал данные. Открой апп кнопкой в чате с ботом."); return; }
+    if (S.uid === "0") { const ok = await applyTgUser(); if (!ok) { toast("Открываю бота для входа…"); setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}?start=login`), 400); } return; }
     await copy(S.uid); haptic("ok"); toast("ID скопирован");
   };
   startLiveScan();
@@ -448,7 +461,7 @@ function drawScanState() {
 
 function drawMine() {
   const box = $("#mine"); if (!box) return; drawScanState();
-  if (S.uid === "0") { box.innerHTML = `<div class="empty"><b>Не удалось определить аккаунт</b>Telegram не передал данные профиля. Закрой мини-апп и открой снова кнопкой «Открыть маркетплейс» в чате с ботом.<button class="btn" id="retryuid" style="margin:14px auto 0;max-width:240px">Повторить</button></div>`; const rb = $("#retryuid"); if (rb) rb.onclick = async () => { const ok = await applyTgUser(); if (!ok) toast("Данные пока недоступны"); }; return; }
+  if (S.uid === "0") { box.innerHTML = `<div class="empty"><b>Нужен вход через бота</b>Ты открыл мини-апп напрямую, Telegram не передал профиль. Нажми кнопку: бот пришлёт персональную кнопку входа, и всё подключится сразу и навсегда.<button class="btn" id="retryuid" style="margin:14px auto 0;max-width:260px">Войти через бота</button></div>`; const rb = $("#retryuid"); if (rb) rb.onclick = () => openTg(`https://t.me/${CONFIG.botUsername}?start=login`); return; }
   const list = mergeGifts();
   if (!list.length) {
     const scanning = ((CONFIG.scanToken && !S.liveTs) || S.myGifts === "pending") && !S._scanGaveUp;
@@ -464,12 +477,14 @@ function drawMine() {
     return;
   }
   const repoIds = new Set((Array.isArray(S.myGifts) ? S.myGifts : []).map((g) => g.gid));
+  const listedIds = new Set((S.catalog || []).filter((c) => c.owner && String(c.owner.uid) === S.uid).map((c) => String(c.g)));
   box.innerHTML = list.map((g) => {
     const t = S.terms[g.gid] || {};
     const c1 = hex(g.cc) || "#5aa7e0", c2 = hex(g.ec) || "#2b3f66";
     return `<div class="lrow" data-g="${esc(g.gid)}">
       <div class="lthumb" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : repoIds.has(g.gid) && g.th_fuid ? `<img src="assets/gifts/${esc(g.th_fuid)}.webp" alt="" onerror="this.remove()">` : g.th_fuid ? `<img data-livethumb="${esc(g.gid)}" alt="">` : "🎁"}</div>
       <div class="lmeta"><b>${esc(dname(g))}${g.num != null ? " #" + esc(g.num) : ""}</b><span>${esc(g.model || (g.stars ? g.stars + " ★" : ""))}${g.mr ? " · " + pct(g.mr) : ""}</span></div>
+      ${listedIds.has(g.gid) ? `<button class="btn out sm unl" data-unl="${esc(g.gid)}" style="margin-right:8px;white-space:nowrap">Снять</button>` : ""}
       <label class="switch"><input type="checkbox" ${t.on ? "checked" : ""}><i></i></label>
     </div>
     <div class="pform" data-pf="${esc(g.gid)}" ${t.on ? "" : "hidden"} style="padding:0 14px 12px;border-bottom:1px solid var(--line)">
@@ -488,6 +503,14 @@ function drawMine() {
     // дубликат-подарки имеют один gid: ставим на сам элемент, фолбэк по DOM — на случай перерисовки
     if (u && el.isConnected) el.src = u;
     else { const cur = box.querySelector(`img[data-livethumb="${CSS.escape(gid)}"]`); if (u && cur) cur.src = u; else if (cur) cur.remove(); }
+  });
+  $$("[data-unl]", box).forEach((b) => b.onclick = async (e) => {
+    e.stopPropagation();
+    const gid = b.dataset.unl;
+    S.terms[gid] = { ...(S.terms[gid] || {}), on: false }; save(CONFIG.termsKey, S.terms);
+    S.catalog = (S.catalog || []).filter((c) => !(c.owner && String(c.owner.uid) === S.uid && String(c.g) === gid));
+    haptic("ok"); renderProfile();
+    await publish(true);
   });
   $$(".lrow", box).forEach((row) => {
     const gid = row.dataset.g; const pf = $(`[data-pf="${CSS.escape(gid)}"]`, box);
@@ -538,9 +561,10 @@ function buildListing() {
   return { l: 1, uid: S.uid, name: S.profile.name || [u.first_name, u.last_name].filter(Boolean).join(" "), uname: S.profile.uname || u.username || "", about: S.profile.about, req: S.profile.req.filter((r) => r.v), gifts };
 }
 
-async function publish() {
+async function publish(force) {
   const obj = buildListing();
-  if (!obj.gifts.length) return toast("Включи хотя бы один подарок");
+  const wasListed = (S.catalog || []).some((g) => g.owner && String(g.owner.uid) === S.uid);
+  if (!obj.gifts.length && !wasListed && !force) return toast("Включи хотя бы один подарок");
   const raw = JSON.stringify(obj);
   const btn = $("#pub");
   // sendData уходит боту мгновенно, если вход разрешает (reply-клавиатура); иначе фолбэк ниже
