@@ -219,3 +219,6 @@ input, textarea, select { font-family: inherit; }
 
 .skeleton { background: linear-gradient(90deg, #f2f2f2 25%, #e8e8e8 37%, #f2f2f2 63%); background-size: 400% 100%; animation: sk 1.3s infinite; }
 @keyframes sk { 0% { background-position: 100% 0 } 100% { background-position: 0 0 } }
+
+/* hidden должен побеждать display:flex/grid у компонентов */
+[hidden] { display: none !important; }
