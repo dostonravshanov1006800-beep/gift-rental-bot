@@ -715,7 +715,7 @@ const ABOUT_TEXT = `
   <div class="sheet-h"><span>\u{1F381} Gift Rent</span><button class="sheet-x" id="x">\u00d7</button></div>
   <div class="about">
     <div class="ab-block"><b>О сервисе</b>
-      Gift Rent — маркетплейс аренды подарков Telegram. Арендуй подарки у других юзеров или зарабатывай, сдавая свои. Основатель: <b>Достонхожа</b> (@dostonxoja). Профиль сканируется автоматически, публикация занимает секунды, всё работает 24/7.</div>
+      Gift Rent — маркетплейс аренды подарков Telegram. Арендуй подарки у других юзеров или зарабатывай, сдавая свои. Основатель: <span class="ab-strong">Достонхожа</span> (@dostonxoja). Профиль сканируется автоматически, публикация занимает секунды, всё работает 24/7.</div>
     <div class="ab-block"><b>Условия использования</b>
       1. Оплата напрямую между юзерами (P2P) — сервис переводов не проводит.<br>
       2. Переводи деньги только после согласования сделки в чате с арендодателем.<br>
@@ -898,7 +898,12 @@ async function init() {
   // и дальше проверяем в фоне (если вебвью отдаст initData позже)
   setInterval(() => { if (S.uid === "0") applyTgUser(); }, 1500);
   // новый юзер: один раз показываем условия, пока он не примет их
-  setTimeout(() => { if (S.uid !== "0" && !agreed()) openAbout(); }, 2500);
+  setTimeout(() => {
+    if (S.uid === "0" || agreed()) return;
+    try { if (localStorage.getItem("gr_about_seen_" + S.uid)) return; } catch (e) { return; }
+    try { localStorage.setItem("gr_about_seen_" + S.uid, String(Date.now())); } catch (e) {}
+    openAbout();
+  }, 2500);
   $$(".tab").forEach((b) => b.addEventListener("click", () => { S.viewShowcase = null; S._userTab = b.dataset.tab; setTab(b.dataset.tab); }));
   $("#gadd").onclick = openAddRent;
   $("#pub").onclick = () => publish();

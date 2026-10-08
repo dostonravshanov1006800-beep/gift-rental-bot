@@ -734,6 +734,9 @@ async def process_update(session, upd):
         await handle_order_status(session, uid, text.split()[-1] if len(text.split()) > 1 else "", "cancelled")
 
 
+POLL = {"ts": 0.0}  # время последнего успешного getUpdates; watchdog по нему решает, оглох ли бот
+
+
 async def safe_process(session, upd):
     try:
         await process_update(session, upd)
@@ -773,6 +776,7 @@ async def main():
 
         async def poll():
             offset = None
+            fail = 0
             while True:
                 params = {"timeout": 25}
                 if offset:
@@ -781,14 +785,23 @@ async def main():
                     async with session.get(f"{API}/getUpdates", params=params,
                                            timeout=aiohttp.ClientTimeout(total=35)) as r:
                         data = await r.json()
+                    POLL["ts"] = time.time()  # живой proof: Telegram ответил
+                    fail = 0
                     for upd in data.get("result", []):
                         offset = upd["update_id"] + 1
                         asyncio.create_task(safe_process(session, upd))
                 except asyncio.TimeoutError:
-                    pass
+                    fail += 1
+                    if fail >= 3:
+                        log.error("getUpdates таймаут %d подряд", fail)
+                    POLL["ts"] = time.time()  # сессия жива, пробуем дальше
                 except Exception:
                     log.exception("poll упал, пауза 5с")
                     await asyncio.sleep(5)
+                except BaseException:
+                    # CancelledError и прочие прерывания: цикл не имеет права умирать тихо
+                    log.exception("poll прерван, цикл жив, пауза 2с")
+                    await asyncio.sleep(2)
 
         async def refresher():
             await asyncio.sleep(10)  # прогрев после старта
@@ -796,11 +809,16 @@ async def main():
             last_hb = 0.0
             while True:
                 try:
+                    # watchdog: getUpdates молчит > 5 минут -> бот «живой, но глухой».
+                    # Убиваем процесс: run упадёт, cron-keep-alive поднимет свежий бот за <=5 минут.
+                    if POLL["ts"] and time.time() - POLL["ts"] > 300:
+                        log.critical("poll мёртв %.0fс, самоубийство для перезапуска", time.time() - POLL["ts"])
+                        os._exit(7)
                     # heartbeat раз в 60с: апп по нему знает, что бот жив и данные актуальны (штамп подарков меняется только при изменении)
                     if time.time() - last_hb > 60 and repo.enabled:
                         last_hb = time.time()
                         asyncio.create_task(repo.commit_files(session, {
-                            "data/heartbeat.json": json.dumps({"ts": int(last_hb)}).encode()}, "bot: heartbeat"))
+                            "data/heartbeat.json": json.dumps({"ts": int(last_hb), "poll_ts": int(POLL["ts"] or 0)}).encode()}, "bot: heartbeat"))
                     # горячие (писали недавно): каждые 2с, все остальные: каждые 10с
                     if tick % 5 == 0:
                         await refresh_all_users(session, hot_only=False)   # все: каждые ~10с
@@ -811,6 +829,7 @@ async def main():
                 tick += 1
                 await asyncio.sleep(2)
 
+        POLL["ts"] = time.time()  # прогрев: 5 минут форы до первого watchdog-провера
         await asyncio.gather(poll(), refresher())
 
 
