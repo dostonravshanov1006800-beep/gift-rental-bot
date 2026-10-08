@@ -28,6 +28,7 @@ const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 // эмодзи из имён подарков вычищаем на чтении: у regular-подарков оно дублирует стикер
 const EMO = /[\p{Extended_Pictographic}\uFE0F\u200D]/gu;
 const gname = (v) => String(v || "").replace(EMO, "").trim();
+const dname = (g) => (g.p === "unique" || g.model) ? (gname(g.name) || "Подарок") : (String(g.name || "").trim() || "Подарок");
 
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -258,21 +259,21 @@ function openDetail(g) {
   const mine = String(o.uid) === S.uid;
   const rows = [["Модель", g.m, g.mr], ["Символ", g.s, g.sr], ["Фон", g.b || "", g.br]].filter((r) => r[1]);
   $("#sheet").innerHTML = `
-    <div class="sheet-h"><span>${esc(gname(g.n) || "Подарок")}${g.num != null ? " #" + esc(g.num) : ""}</span><button class="sheet-x" id="x">×</button></div>
+    <div class="sheet-h"><span>${esc(g.dn || gname(g.n) || "Подарок")}${g.num != null ? " #" + esc(g.num) : ""}</span><button class="sheet-x" id="x">×</button></div>
     <div class="dcanvas" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : "🎁"}</div>
     <div class="dchips">${rows.map((r) => `<div class="dchip"><span>${r[0]}</span><b>${esc(r[1])}</b>${r[2] ? `<i>${pct(r[2])}</i>` : ""}</div>`).join("")}</div>
-    <div class="dprice">${g.p ? `${esc(money(g.p))} ${esc(g.cur || "")} <small>/ ${esc(g.per || "")}</small>` : `<small>Цена по договорённости</small>`}</div>
+    <div class="dprice">${g.p ? `${esc(money(g.p))} ${esc(g.cur || "")} <small>/ ${esc(g.per || "")}</small>` : g.stars ? `${esc(g.stars)} <small>★ в профиле</small>` : `<small>Цена по договорённости</small>`}</div>
     <div class="owner"><div class="oav">${esc((o.name || o.uname || "?").slice(0, 1).toUpperCase())}</div><div><b>${esc(o.name || "Арендодатель")}</b><span>${o.uname ? "@" + esc(o.uname) : "ID " + esc(o.uid)}</span></div></div>
     ${mine ? `<div class="hint" style="margin:0 0 10px">Это твой подарок.</div>` : `
     <div class="field"><label>Комментарий (срок, вопросы)</label><input id="oc" maxlength="80" placeholder="Например: на 3 дня"></div>
     <div class="row">
       <button class="btn" id="ord">Заказать аренду</button>
-      <button class="btn out" id="nft">NFT</button>
+      ${g.g ? `<button class="btn out" id="nft">NFT</button>` : ""}
     </div>`}
-    ${mine ? `<button class="btn out" id="nft" style="width:100%">Открыть NFT</button>` : ""}`;
+    ${mine && g.g ? `<button class="btn out" id="nft" style="width:100%">Открыть NFT</button>` : ""}`;
   $("#overlay").hidden = false;
   $("#x").onclick = () => ($("#overlay").hidden = true);
-  $("#nft").onclick = () => openTg(`https://t.me/nft/${encodeURIComponent(String(g.g).toLowerCase())}`);
+  if ($("#nft")) $("#nft").onclick = () => openTg(`https://t.me/nft/${encodeURIComponent(String(g.g).toLowerCase())}`);
   const ord = $("#ord");
   if (ord) ord.onclick = async () => {
     const payload = b64e(JSON.stringify({ o: 1, lu: String(o.uid), g: g.g, p: g.p || "", cur: g.cur || "", per: g.per || "", c: ($("#oc").value || "").slice(0, 80) }));
@@ -400,14 +401,20 @@ function drawMine() {
   const box = $("#mine"); if (!box) return; drawScanState();
   if (S.uid === "0") { box.innerHTML = `<div class="empty">Открой мини-апп через Telegram.</div>`; return; }
   const list = mergeGifts();
-  if (!list.length) { box.innerHTML = `<div class="empty"><b>Сканирую профиль…</b>Подарки появятся через пару секунд.</div>`; return; }
+  if (!list.length) {
+    const scanning = (CONFIG.scanToken && !S.liveTs) || S.myGifts === "pending";
+    box.innerHTML = scanning
+      ? Array.from({ length: 3 }, () => `<div class="lrow skl"><div class="lthumb sk-block"></div><div class="lmeta"><b class="sk-line w60"></b><span class="sk-line w40"></span></div></div>`).join("")
+      : `<div class="empty"><b>Нет подарков</b>Подарки появятся, когда их откроют в профиле Telegram.</div>`;
+    return;
+  }
   const repoIds = new Set((Array.isArray(S.myGifts) ? S.myGifts : []).map((g) => g.gid));
   box.innerHTML = list.map((g) => {
     const t = S.terms[g.gid] || {};
     const c1 = hex(g.cc) || "#5aa7e0", c2 = hex(g.ec) || "#2b3f66";
     return `<div class="lrow" data-g="${esc(g.gid)}">
       <div class="lthumb" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : repoIds.has(g.gid) && g.th_fuid ? `<img src="assets/gifts/${esc(g.th_fuid)}.webp" alt="" onerror="this.remove()">` : g.th_fuid ? `<img data-livethumb="${esc(g.gid)}" alt="">` : "🎁"}</div>
-      <div class="lmeta"><b>${esc(gname(g.name) || "Подарок")}${g.num != null ? " #" + esc(g.num) : ""}</b><span>${esc(g.model || (g.stars ? g.stars + " ★" : ""))}${g.mr ? " · " + pct(g.mr) : ""}</span></div>
+      <div class="lmeta"><b>${esc(dname(g))}${g.num != null ? " #" + esc(g.num) : ""}</b><span>${esc(g.model || (g.stars ? g.stars + " ★" : ""))}${g.mr ? " · " + pct(g.mr) : ""}</span></div>
       <label class="switch"><input type="checkbox" ${t.on ? "checked" : ""}><i></i></label>
     </div>
     <div class="pform" data-pf="${esc(g.gid)}" ${t.on ? "" : "hidden"} style="padding:0 14px 12px;border-bottom:1px solid var(--line)">
@@ -430,10 +437,25 @@ function drawMine() {
   $$(".lrow", box).forEach((row) => {
     const gid = row.dataset.g; const pf = $(`[data-pf="${CSS.escape(gid)}"]`, box);
     const t = () => (S.terms[gid] = S.terms[gid] || {});
+    $(".lmeta", row).onclick = async () => { const g = list.find((x) => x.gid === gid); if (g) openMyGiftDetail(g, repoIds.has(gid)); };
     $("input[type=checkbox]", row).onchange = (e) => { t().on = e.target.checked; pf.hidden = !e.target.checked; save(CONFIG.termsKey, S.terms); haptic(); };
     $("[data-p]", pf).oninput = (e) => { t().p = e.target.value; save(CONFIG.termsKey, S.terms); };
     $("[data-c]", pf).onchange = (e) => { t().cur = e.target.value; save(CONFIG.termsKey, S.terms); };
     $("[data-r]", pf).onchange = (e) => { t().per = e.target.value; save(CONFIG.termsKey, S.terms); };
+  });
+}
+
+async function openMyGiftDetail(g, fromRepo) {
+  haptic();
+  let t = null;
+  if (fromRepo && g.th_fuid) t = `assets/gifts/${g.th_fuid}.webp`;
+  else t = await thumbUrl(g);
+  const u = S.user || {};
+  openDetail({
+    n: g.name, dn: dname(g), num: g.num, m: g.model, s: g.symbol, b: g.backdrop,
+    mr: g.mr, sr: g.sr, br: g.br, cc: g.cc, ec: g.ec, t,
+    g: g.uniq || (g.p === "unique" ? g.gid : ""), stars: g.stars,
+    p: "", owner: { uid: S.uid, name: S.profile.name || u.first_name || "", uname: u.username || "" },
   });
 }
 
@@ -513,8 +535,9 @@ async function liveScan(uid) {
         if (g.is_burned) continue;
         const u = g.gift || {};
         if (g.type !== "unique") {
-          const st = (u.sticker || {}).thumbnail || {};
-          gifts.push({ gid: u.id || "", name: u.title || "", num: null,
+          const stk = u.sticker || {};
+          const st = stk.thumbnail || {};
+          gifts.push({ gid: u.id || "", name: u.title || stk.emoji || "", num: null,
             model: "", symbol: "", backdrop: "", cc: null, ec: null, mr: null, sr: null, br: null,
             th_fuid: st.file_unique_id, th_fid: st.file_id, p: g.type, stars: u.star_count });
           continue;
