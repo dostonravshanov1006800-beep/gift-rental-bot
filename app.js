@@ -28,7 +28,10 @@ const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 // эмодзи из имён подарков вычищаем на чтении: у regular-подарков оно дублирует стикер
 const EMO = /[\p{Extended_Pictographic}\uFE0F\u200D]/gu;
 const gname = (v) => String(v || "").replace(EMO, "").trim();
-const dname = (g) => (g.p === "unique" || g.model) ? (gname(g.name) || "Подарок") : (String(g.name || "").trim() || "Подарок");
+const dname = (g) => {
+  const v = g.name != null ? g.name : g.n;
+  return (g.p === "unique" || g.model || g.m) ? (gname(v) || "Подарок") : (String(v || "").trim() || "Подарок");
+};
 
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -176,7 +179,7 @@ function card(g, i) {
       <button class="gheart ${fav ? "on" : ""}" data-fav="${i}" aria-label="В избранное"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.600-7 10-7 10z"/></svg></button>
     </div>
     <div class="ginfo">
-      <div class="gname">${esc(gname(g.n) || "Подарок")}</div>
+      <div class="gname">${esc(dname(g))}</div>
       <div class="gattr">${esc(g.m || "")}${g.s ? " · " + esc(g.s) : ""}</div>
       ${price}
     </div>
@@ -259,7 +262,7 @@ function openDetail(g) {
   const mine = String(o.uid) === S.uid;
   const rows = [["Модель", g.m, g.mr], ["Символ", g.s, g.sr], ["Фон", g.b || "", g.br]].filter((r) => r[1]);
   $("#sheet").innerHTML = `
-    <div class="sheet-h"><span>${esc(g.dn || gname(g.n) || "Подарок")}${g.num != null ? " #" + esc(g.num) : ""}</span><button class="sheet-x" id="x">×</button></div>
+    <div class="sheet-h"><span>${esc(g.dn || dname(g))}${g.num != null ? " #" + esc(g.num) : ""}</span><button class="sheet-x" id="x">×</button></div>
     <div class="dcanvas" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : "🎁"}</div>
     <div class="dchips">${rows.map((r) => `<div class="dchip"><span>${r[0]}</span><b>${esc(r[1])}</b>${r[2] ? `<i>${pct(r[2])}</i>` : ""}</div>`).join("")}</div>
     <div class="dprice">${g.p ? `${esc(money(g.p))} ${esc(g.cur || "")} <small>/ ${esc(g.per || "")}</small>` : g.stars ? `${esc(g.stars)} <small>★ в профиле</small>` : `<small>Цена по договорённости</small>`}</div>
