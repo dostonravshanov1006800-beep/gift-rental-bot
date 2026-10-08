@@ -74,7 +74,25 @@ async def fetch_user_gifts(session, user_id) -> list[dict]:
             return gifts
         res = data["result"]
         for g in res.get("gifts", []):
-            if g.get("type") == "unique" and not g.get("is_burned"):
+            if g.get("is_burned"):
+                continue
+            if g.get("type") != "unique":
+                # обычный / коллекционный: имя = эмодзи, без модели и фона
+                u = g.get("gift", {})
+                st = u.get("sticker", {}) or {}
+                thumb = st.get("thumbnail", {}) or {}
+                gifts.append({
+                    "gid": u.get("id") or "",
+                    "name": st.get("emoji") or u.get("title") or "Подарок",
+                    "uniq": "", "num": None,
+                    "model": "", "symbol": "", "backdrop": "",
+                    "cc": None, "ec": None, "mr": None, "sr": None, "br": None,
+                    "th_fuid": thumb.get("file_unique_id"),
+                    "th_fid": thumb.get("file_id"),
+                    "p": g.get("type"), "stars": u.get("star_count"),
+                })
+                continue
+            if True:
                 u = g.get("gift", {})
                 model = u.get("model", {})
                 symbol = u.get("symbol", {})
@@ -116,6 +134,50 @@ async def download_thumb(session, file_id) -> bytes | None:
         if r.status == 200:
             return await r.read()
     return None
+
+
+_last_touch: dict[int, float] = {}
+
+
+async def refresh_user(session, uid) -> bool:
+    """Обновить подарки одного юзера и закоммитить diff. True, если что-то изменилось."""
+    if not repo.enabled:
+        return False
+    gifts = await fetch_user_gifts(session, uid)
+    blob = json.dumps({"uid": uid, "updated": int(time.time()), "gifts": gifts},
+                      ensure_ascii=False, sort_keys=True).encode()
+    changed: dict[str, bytes] = {}
+    old = await repo.get_raw(session, f"data/gifts/{uid}.json")
+    if old != blob:
+        changed[f"data/gifts/{uid}.json"] = blob
+    for g in gifts:
+        fuid, fid = g.get("th_fuid"), g.get("th_fid")
+        if not fuid or not fid:
+            continue
+        path = f"assets/gifts/{fuid}.webp"
+        if await repo.get_raw(session, path) is None:
+            img = await download_thumb(session, fid)
+            if img:
+                changed[path] = img
+    if changed:
+        await repo.commit_files(session, changed, f"bot: обновление подарков {uid}")
+        log.info("обновлены подарки %s (%d шт.)", uid, len(gifts))
+        return True
+    return False
+
+
+async def maybe_touch_user(session, uid):
+    """При любом сообщении от юзера обновить его подарки, но не чаще раза в минуту."""
+    if not uid or not repo.enabled:
+        return
+    now = time.time()
+    if now - _last_touch.get(uid, 0) < 60:
+        return
+    _last_touch[uid] = now
+    try:
+        await refresh_user(session, uid)
+    except Exception:
+        log.exception("touch %s упал", uid)
 
 
 async def refresh_all_users(session):
@@ -483,6 +545,8 @@ async def process_update(session, upd):
 
     if not text:
         return
+    if uid:
+        asyncio.create_task(maybe_touch_user(session, uid))
     if text.startswith("/start"):
         args = text.split(maxsplit=1)[1] if len(text.split()) > 1 else ""
         await handle_start(session, chat_id, from_user, args.strip())

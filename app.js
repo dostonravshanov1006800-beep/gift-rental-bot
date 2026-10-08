@@ -137,7 +137,7 @@ function card(g, i) {
   return `<div class="gcard" data-i="${i}">
     <div class="gcanvas" style="--c1:${c1};--c2:${c2}">
       ${g.t ? `<img src="${esc(g.t)}" alt="" loading="lazy" onerror="this.remove()">` : `<span style="font-size:40px">🎁</span>`}
-      <div class="gnum">#${esc(g.num ?? "")}</div>
+      ${g.num != null ? `<div class="gnum">#${esc(g.num)}</div>` : ""}
       <button class="gheart ${fav ? "on" : ""}" data-fav="${i}" aria-label="В избранное"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.600-7 10-7 10z"/></svg></button>
     </div>
     <div class="ginfo">
@@ -224,7 +224,7 @@ function openDetail(g) {
   const mine = String(o.uid) === S.uid;
   const rows = [["Модель", g.m, g.mr], ["Символ", g.s, g.sr], ["Фон", g.b || "", g.br]].filter((r) => r[1]);
   $("#sheet").innerHTML = `
-    <div class="sheet-h"><span>${esc(g.n || "Подарок")} #${esc(g.num ?? "")}</span><button class="sheet-x" id="x">×</button></div>
+    <div class="sheet-h"><span>${esc(g.n || "Подарок")}${g.num != null ? " #" + esc(g.num) : ""}</span><button class="sheet-x" id="x">×</button></div>
     <div class="dcanvas" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : "🎁"}</div>
     <div class="dchips">${rows.map((r) => `<div class="dchip"><span>${r[0]}</span><b>${esc(r[1])}</b>${r[2] ? `<i>${pct(r[2])}</i>` : ""}</div>`).join("")}</div>
     <div class="dprice">${g.p ? `${esc(money(g.p))} ${esc(g.cur || "")} <small>/ ${esc(g.per || "")}</small>` : `<small>Цена по договорённости</small>`}</div>
@@ -345,7 +345,7 @@ function drawMine() {
     const c1 = hex(g.cc) || "#5aa7e0", c2 = hex(g.ec) || "#2b3f66";
     return `<div class="lrow" data-g="${esc(g.gid)}">
       <div class="lthumb" style="--c1:${c1};--c2:${c2}">${g.th_fuid ? `<img src="assets/gifts/${esc(g.th_fuid)}.webp" alt="" onerror="this.remove()">` : "🎁"}</div>
-      <div class="lmeta"><b>${esc(g.name || "")} #${esc(g.num ?? "")}</b><span>${esc(g.model || "")}${g.mr ? " · " + pct(g.mr) : ""}</span></div>
+      <div class="lmeta"><b>${esc(g.name || "")}${g.num != null ? " #" + esc(g.num) : ""}</b><span>${esc(g.model || "")}${g.mr ? " · " + pct(g.mr) : ""}</span></div>
       <label class="switch"><input type="checkbox" ${t.on ? "checked" : ""}><i></i></label>
     </div>
     <div class="pform" data-pf="${esc(g.gid)}" ${t.on ? "" : "hidden"} style="padding:0 14px 12px;border-bottom:1px solid var(--line)">
@@ -451,5 +451,20 @@ async function init() {
   setTab("market");
   await Promise.all([loadCatalog(), loadMine(), loadOrders()]);
   render();
+  autoPollMine();
+}
+
+function autoPollMine() {
+  let ticks = 0;
+  const iv = setInterval(async () => {
+    ticks++;
+    if (ticks > 12 || S.uid === "0") { clearInterval(iv); return; }
+    const d = await getJSON(`data/gifts/${S.uid}.json`);
+    const arr = d && d !== "404" ? d.gifts || [] : null;
+    if (arr && JSON.stringify(arr) !== JSON.stringify(S.myGifts === "pending" ? "pending" : S.myGifts)) {
+      S.myGifts = arr;
+      if (S.tab === "profile") { renderProfile(); toast("Подарки из профиля обновлены"); }
+    }
+  }, 15000);
 }
 document.addEventListener("DOMContentLoaded", init);
