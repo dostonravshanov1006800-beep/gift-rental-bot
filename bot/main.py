@@ -743,8 +743,14 @@ async def main():
         async def refresher():
             await asyncio.sleep(10)  # прогрев после старта
             tick = 0
+            last_hb = 0.0
             while True:
                 try:
+                    # heartbeat раз в 60с: апп по нему знает, что бот жив и данные актуальны (штамп подарков меняется только при изменении)
+                    if time.time() - last_hb > 60 and repo.enabled:
+                        last_hb = time.time()
+                        asyncio.create_task(repo.commit_files(session, {
+                            "data/heartbeat.json": json.dumps({"ts": int(last_hb)}).encode()}, "bot: heartbeat"))
                     # горячие (писали недавно): каждые 2с, все остальные: каждые 10с
                     if tick % 5 == 0:
                         await refresh_all_users(session, hot_only=False)   # все: каждые ~10с

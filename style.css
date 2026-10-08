@@ -359,3 +359,10 @@ select.inp { appearance: none; -webkit-appearance: none; }
 /* кнопка «Опубликовать» не перекрывается таббаром */
 .btnrow { position: sticky; bottom: calc(66px + env(safe-area-inset-bottom, 0px)); z-index: 5; padding-bottom: 6px; }
 #pub.busy { opacity: .7; pointer-events: none; }
+
+.scanstate .dot-off { width: 7px; height: 7px; border-radius: 50%; background: #e0a23a; flex: 0 0 7px; }
+
+/* статус аренды в профиле: «в аренде» / «не в аренде» */
+.lmeta .st { display: inline-block; margin-top: 4px; padding: 2px 7px; border-radius: 99px; font-size: 10.5px; font-weight: 700; font-style: normal; letter-spacing: .2px; text-transform: uppercase; }
+.lmeta .st.on { background: rgba(52, 209, 123, .14); color: var(--ok, #34d17b); }
+.lmeta .st.off { background: var(--bg-card); color: var(--muted); border: 1px solid var(--line); }

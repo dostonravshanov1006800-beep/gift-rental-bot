@@ -172,6 +172,7 @@ async function getJSON(path) {
 async function loadCatalog() { const d = await getJSON("data/catalog.json"); S.catalog = d && d !== "404" ? d.items || [] : []; }
 async function loadMine() {
   if (S.uid === "0") { S.myGifts = []; return; }
+  getJSON("data/heartbeat.json").then((hb) => { if (hb && hb !== "404" && hb.ts) { S.hb = hb.ts; drawScanState(); } });
   const d = await getJSON(`data/gifts/${S.uid}.json`);
   S.myGifts = d === "404" ? "pending" : d ? d.gifts || [] : [];
   S.myGiftsUpd = d && d !== "404" ? d.updated || 0 : 0;
@@ -451,13 +452,13 @@ function drawScanState() {
     }
     // live-скан не удался (юзер не подключал скан-бота): показываем repo-статус ниже
   }
-  const upd = S.myGiftsUpd;
   if (S.myGifts === "pending") { el.innerHTML = `<span class="spin"></span>Сканирую профиль Telegram…`; return; }
-  if (!upd) { el.innerHTML = ``; return; }
-  const age = Math.max(0, Math.round(Date.now() / 1000 - upd));
-  el.innerHTML = age < 60
-    ? `<i class="dot-live"></i>Профиль отсканирован ${age} с назад`
-    : `Профиль отсканирован ${Math.round(age / 60)} мин назад`;
+  if (!Array.isArray(S.myGifts)) { el.innerHTML = ``; return; }
+  // бот сканирует профиль каждые 2-10с; штамп подарков меняется только при изменении, поэтому живость берём из heartbeat
+  const hbAge = S.hb ? Math.round(Date.now() / 1000 - S.hb) : null;
+  el.innerHTML = hbAge != null && hbAge < 150
+    ? `<i class="dot-live"></i>Профиль синхронизируется автоматически`
+    : `<i class="dot-off"></i>Бот сейчас перезапускается, данные обновятся через минуту`;
 }
 
 function drawMine() {
@@ -486,11 +487,13 @@ function drawMine() {
   const listedIds = new Set((S.catalog || []).filter((c) => c.owner && String(c.owner.uid) === S.uid).map((c) => String(c.g)));
   box.innerHTML = list.map((g) => {
     const t = S.terms[g.gid] || {};
+    const listed = listedIds.has(g.gid);
     const c1 = hex(g.cc) || "#5aa7e0", c2 = hex(g.ec) || "#2b3f66";
     return `<div class="lrow" data-g="${esc(g.gid)}">
       <div class="lthumb" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : repoIds.has(g.gid) && g.th_fuid ? `<img src="assets/gifts/${esc(g.th_fuid)}.webp" alt="" onerror="this.remove()">` : g.th_fuid ? `<img data-livethumb="${esc(g.gid)}" alt="">` : "🎁"}</div>
-      <div class="lmeta"><b>${esc(dname(g))}${g.num != null ? " #" + esc(g.num) : ""}</b><span>${esc(g.model || (g.stars ? g.stars + " ★" : ""))}${g.mr ? " · " + pct(g.mr) : ""}</span></div>
-      ${listedIds.has(g.gid) ? `<button class="btn out sm unl" data-unl="${esc(g.gid)}" style="margin-right:8px;white-space:nowrap">Снять</button>` : ""}
+      <div class="lmeta"><b>${esc(dname(g))}${g.num != null ? " #" + esc(g.num) : ""}</b><span>${esc(g.model || (g.stars ? g.stars + " ★" : ""))}${g.mr ? " · " + pct(g.mr) : ""}</span>
+        <i class="st ${listed ? "on" : "off"}">${listed ? "в аренде" : "не в аренде"}</i></div>
+      ${listed ? `<button class="btn out sm unl" data-unl="${esc(g.gid)}" style="margin-right:8px;white-space:nowrap">Снять с аренды</button>` : ""}
       <label class="switch"><input type="checkbox" ${t.on ? "checked" : ""}><i></i></label>
     </div>
     <div class="pform" data-pf="${esc(g.gid)}" ${t.on ? "" : "hidden"} style="padding:0 14px 12px;border-bottom:1px solid var(--line)">
@@ -794,6 +797,7 @@ function autoPollMine() {
         if (S.tab === "fav") render();
       }
     }
+    const hb = await getJSON("data/heartbeat.json"); if (hb && hb !== "404" && hb.ts) S.hb = hb.ts;
     if (S.uid === "0") return;
     const d = await getJSON(`data/gifts/${S.uid}.json`);
     const arr = d && d !== "404" ? d.gifts || [] : null;
