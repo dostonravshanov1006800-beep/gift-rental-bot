@@ -16,7 +16,7 @@ const CURRENCIES = ["UZS", "RUB", "USD", "USDT", "TON"];
 
 const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
 if (tg) {
-  try { tg.ready(); tg.expand(); tg.setHeaderColor && tg.setHeaderColor("#ffffff"); tg.setBackgroundColor && tg.setBackgroundColor("#ffffff"); } catch (e) {}
+  try { tg.ready(); tg.expand(); tg.setHeaderColor && tg.setHeaderColor("#0e1015"); tg.setBackgroundColor && tg.setBackgroundColor("#0e1015"); } catch (e) {}
 }
 
 /* ============================================================
@@ -118,6 +118,8 @@ async function loadOrders() {
 /* ============================================================
  * shell: tabs
  * ============================================================ */
+const _pubMode = new URLSearchParams(location.search).get("m") === "pub";
+
 function openAddRent() {
   if (S.uid === "0") return toast("Открой мини-апп через Telegram");
   setTab("profile");
@@ -326,8 +328,8 @@ function renderProfile() {
 
     <div class="section-title">Сдать подарок в аренду</div>
     <div id="mine"></div>
-    <div class="hint">Включи переключатель, укажи цену и срок, затем нажми «Опубликовать». Бот сверит подарки с твоим профилем и добавит их в каталог.</div>
-    <div class="btnrow"><button class="btn" id="pub">Опубликовать в каталог</button></div>`;
+    <div class="hint">Включи переключатель, укажи цену и срок. Бот сверит подарки с твоим профилем, публикация мгновенная.</div>
+    <div class="btnrow"><button class="btn" id="pub">Опубликовать</button></div>`;
   $("#cid").onclick = async () => { await copy(S.uid); haptic("ok"); toast("ID скопирован"); };
   $("#edit").onclick = openEdit;
   $("#share").onclick = shareShowcase;
@@ -350,7 +352,7 @@ function drawReq() {
 function drawMine() {
   const box = $("#mine"); if (!box) return;
   if (S.uid === "0") { box.innerHTML = `<div class="empty">Открой мини-апп через Telegram.</div>`; return; }
-  if (S.myGifts === "pending") { box.innerHTML = `<div class="empty"><b>Подарки ещё не загружены</b>Нажми /start в боте. Список подтянется в течение ~10 минут.</div>`; return; }
+  if (S.myGifts === "pending") { box.innerHTML = `<div class="empty"><b>Подарки ещё не загружены</b>Нажми /start в боте: подарки подтянутся за несколько секунд.</div>`; return; }
   if (!S.myGifts || !S.myGifts.length) { box.innerHTML = `<div class="empty"><b>Нет уникальных подарков</b>Бот видит только подарки, открытые в твоём профиле.</div>`; return; }
   box.innerHTML = S.myGifts.map((g) => {
     const t = S.terms[g.gid] || {};
@@ -403,7 +405,15 @@ function buildListing() {
 async function publish() {
   const obj = buildListing();
   if (!obj.gifts.length) return toast("Включи хотя бы один подарок");
-  const payload = b64e(JSON.stringify(obj));
+  const raw = JSON.stringify(obj);
+  const btn = $("#pub");
+  // режим «Сдать подарок» (reply-кнопка): sendData уходит боту мгновенно, апп закрывается сам
+  if (tg && tg.sendData && _pubMode) {
+    btn && btn.classList.add("busy"); haptic("ok");
+    tg.sendData(raw);
+    return;
+  }
+  const payload = b64e(raw);
   if (payload.length > 3900) return toast("Слишком много подарков за раз: выключи часть");
   if (!(await copy(payload))) return toast("Не удалось скопировать");
   haptic("ok"); toast("Скопировано. Вставь в чат бота и отправь.");
@@ -456,12 +466,12 @@ async function init() {
   const sp = tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param;
   if (sp && sp.startsWith("u_")) S.viewShowcase = sp.slice(2);
 
-  $("#view").innerHTML = `<div class="empty">Загрузка…</div>`;
+  $("#view").innerHTML = `<div class="grid">${Array(6).fill(`<div class="gcard sk-card"><div class="gcanvas sk"></div><div class="ginfo"><div class="sk sk-line" style="width:70%"></div><div class="sk sk-line" style="width:45%"></div></div></div>`).join("")}</div>`;
   const [p, t, f] = await Promise.all([load(CONFIG.profileKey, null), load(CONFIG.termsKey, {}), load(CONFIG.favKey, {})]);
   if (p) S.profile = { ...S.profile, ...p };
   S.terms = t || {}; S.fav = f || {};
   S.showcase = S.viewShowcase ? { uid: S.viewShowcase } : null;
-  setTab("market");
+  setTab(_pubMode ? "profile" : "market");
   await Promise.all([loadCatalog(), loadMine(), loadOrders()]);
   render();
   autoPollMine();
@@ -491,7 +501,7 @@ function autoPollMine() {
     const o = await getJSON(`data/orders/${S.uid}.json`);
     const orders = o && o !== "404" ? o.orders || [] : null;
     if (orders && !same(orders, S.orders)) { S.orders = orders; if (S.tab === "orders") render(); }
-  }, 15000);
+  }, 6000);
   // вернулся в мини-апп из бота -> сразу подтянуть свежее
   const onback = async () => { if (document.hidden) return; await Promise.all([loadCatalog(), loadMine(), loadOrders()]); render(); };
   window.addEventListener("pageshow", onback);

@@ -13,6 +13,7 @@ data/users.json, data/gifts/<uid>.json, denylist.json, data/complaints.json.
 """
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -32,7 +33,7 @@ GH_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 SIGNING_KEY_PEM = os.environ.get("SIGNING_KEY", "")
 ADMIN_IDS = {x for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x}
 
-REFRESH_INTERVAL = 600  # сек, цикл обновления подарков
+REFRESH_INTERVAL = 45  # сек, цикл обновления подарков
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 repo = Repo(GH_TOKEN or None, REPO_NAME or None)
@@ -136,34 +137,43 @@ async def download_thumb(session, file_id) -> bytes | None:
     return None
 
 
+_gift_hash: dict[int, str] = {}
+
+
+async def build_user_files(session, uid) -> dict:
+    """Скачивает подарки и недостающие стикеры, возвращает только изменившиеся файлы."""
+    gifts = await fetch_user_gifts(session, uid)
+    body = json.dumps({"uid": uid, "gifts": gifts}, ensure_ascii=False, sort_keys=True)
+    h = hashlib.md5(body.encode()).hexdigest()
+    files: dict = {}
+    if _gift_hash.get(uid) != h:
+        _gift_hash[uid] = h
+        files[f"data/gifts/{uid}.json"] = json.dumps(
+            {"uid": uid, "updated": int(time.time()), "gifts": gifts},
+            ensure_ascii=False, sort_keys=True).encode()
+    async def one(g):
+        fuid, fid = g.get("th_fuid"), g.get("th_fid")
+        if not fuid or not fid or fuid in KNOWN_THUMBS:
+            return
+        KNOWN_THUMBS.add(fuid)
+        img = await download_thumb(session, fid)
+        if img:
+            files[f"assets/gifts/{fuid}.webp"] = img
+    await asyncio.gather(*[one(g) for g in gifts])
+    return files
+
+
+KNOWN_THUMBS: set = set()
 _last_touch: dict[int, float] = {}
 
 
 async def refresh_user(session, uid) -> bool:
-    """Обновить подарки одного юзера и закоммитить diff. True, если что-то изменилось."""
     if not repo.enabled:
         return False
-    gifts = await fetch_user_gifts(session, uid)
-    blob = json.dumps({"uid": uid, "updated": int(time.time()), "gifts": gifts},
-                      ensure_ascii=False, sort_keys=True).encode()
-    changed: dict[str, bytes] = {}
-    old = await repo.get_raw(session, f"data/gifts/{uid}.json")
-    if old != blob:
-        changed[f"data/gifts/{uid}.json"] = blob
-    for g in gifts:
-        fuid, fid = g.get("th_fuid"), g.get("th_fid")
-        if not fuid or not fid:
-            continue
-        path = f"assets/gifts/{fuid}.webp"
-        if await repo.get_raw(session, path) is None:
-            img = await download_thumb(session, fid)
-            if img:
-                changed[path] = img
-    if changed:
-        await repo.commit_files(session, changed, f"bot: обновление подарков {uid}")
-        log.info("обновлены подарки %s (%d шт.)", uid, len(gifts))
-        return True
-    return False
+    files = await build_user_files(session, uid)
+    if not files:
+        return False
+    return await repo.commit_files(session, files, f"bot: подарки {uid}")
 
 
 async def maybe_touch_user(session, uid):
@@ -171,7 +181,7 @@ async def maybe_touch_user(session, uid):
     if not uid or not repo.enabled:
         return
     now = time.time()
-    if now - _last_touch.get(uid, 0) < 60:
+    if now - _last_touch.get(uid, 0) < 8:
         return
     _last_touch[uid] = now
     try:
@@ -181,49 +191,27 @@ async def maybe_touch_user(session, uid):
 
 
 async def refresh_all_users(session):
-    """Цикл: обновить подарки всех зарегистрированных юзеров, закоммитить diff."""
+    """Цикл: подарки всех юзеров параллельно, один общий коммит только при изменениях."""
     if not repo.enabled:
-        log.info("GITHUB_TOKEN нет, пропускаю коммиты")
         return
     users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
-    changed: dict[str, bytes] = {}
-    for u in users.get("users", []):
-        uid = u["id"]
+    async def one(u):
         try:
-            gifts = await fetch_user_gifts(session, uid)
+            return await build_user_files(session, u["id"])
         except Exception:
-            log.exception("getUserGifts упал для %s", uid)
-            continue
-
-        # нормализация: стабильный JSON
-        blob = json.dumps({"uid": uid, "updated": int(time.time()), "gifts": gifts},
-                          ensure_ascii=False, sort_keys=True).encode()
-        old = await repo.get_raw(session, f"data/gifts/{uid}.json")
-        if old == blob:
-            continue
-        changed[f"data/gifts/{uid}.json"] = blob
-
-        # стикеры, которых нет в assets
-        for g in gifts:
-            fuid, fid = g.get("th_fuid"), g.get("th_fid")
-            if not fuid or not fid:
-                continue
-            path = f"assets/gifts/{fuid}.webp"
-            if await repo.get_raw(session, path) is not None:
-                continue
-            img = await download_thumb(session, fid)
-            if img:
-                changed[path] = img
-        await asyncio.sleep(0.3)
-
+            log.exception("getUserGifts упал для %s", u.get("id")); return {}
+    parts = await asyncio.gather(*[one(u) for u in users.get("users", [])])
+    changed = {}
+    for p in parts:
+        changed.update(p)
     if changed:
-        await repo.commit_files(session, changed, "bot: обновление подарков "
-                                    f"({len([k for k in changed if k.endswith('.json')])} профилей)")
-
-
+        await repo.commit_files(session, changed, f"bot: подарки ({len(parts)} проф.)")
 
 
 # ---------------------------------------------------------------- catalog
+LISTINGS: dict = {}
+
+
 async def rebuild_catalog(session):
     """Собирает data/catalog.json из data/listings/*.json (плоский список подарков в аренде)."""
     users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
@@ -234,7 +222,10 @@ async def rebuild_catalog(session):
         uid = str(u["id"])
         if uid in blocked:
             continue
-        lst = await repo.get_json(session, f"data/listings/{uid}.json")
+        lst = LISTINGS.get(uid)
+        if lst is None:
+            lst = await repo.get_json(session, f"data/listings/{uid}.json") or {}
+            LISTINGS[uid] = lst
         if not lst:
             continue
         owner = {"uid": uid, "name": lst.get("name") or u.get("first", ""),
@@ -280,13 +271,13 @@ async def handle_publish(session, chat_id, from_id, obj):
     if not repo.enabled:
         await send_text(session, chat_id, "Репозиторий не подключён.")
         return
-    await repo.commit_files(session, {
-        f"data/listings/{from_id}.json": json.dumps(listing, ensure_ascii=False).encode()},
-        f"bot: листинг {from_id} ({len(out)} подарков)")
+    LISTINGS[str(from_id)] = listing
     cat = await rebuild_catalog(session)
-    await repo.commit_files(session, {"data/catalog.json": cat}, "bot: каталог")
+    ok = await repo.commit_files(session, {
+        f"data/listings/{from_id}.json": json.dumps(listing, ensure_ascii=False).encode(),
+        "data/catalog.json": cat}, f"bot: листинг {from_id} ({len(out)})")
     await send_text(session, chat_id,
-        f"✅ Опубликовано подарков в аренду: {len(out)}. Каталог обновится на сайте через ~1 минуту.")
+        f"✅ Опубликовано: {len(out)}. Уже в каталоге." if ok else "⚠️ Не удалось сохранить, повтори через минуту.")
 
 # ---------------------------------------------------------------- orders
 async def handle_order(session, from_user, obj):
@@ -476,25 +467,32 @@ async def handle_start(session, chat_id, from_user, args=""):
     # ответ СРАЗУ, без зависимости от GitHub
     app_url = f"https://{REPO_NAME.split('/')[0]}.github.io/{REPO_NAME.split('/')[-1]}/" if REPO_NAME else ""
     markup = {"inline_keyboard": [[{"text": "Открыть маркетплейс", "web_app": {"url": app_url}}]]} if app_url else None
+    if app_url:
+        # reply-клавиатура: только из неё мини-апп может вызвать sendData (публикация без копирования)
+        await tg_call(session, "sendMessage", {
+            "chat_id": chat_id, "text": "Кнопка снизу: сдать подарок в аренду в один тап.",
+            "reply_markup": {"keyboard": [[{"text": "Сдать подарок", "web_app": {"url": app_url + "?m=pub"}}]],
+                             "resize_keyboard": True, "is_persistent": True}})
     await send_text(session, chat_id,
         "<b>Gift Rent</b>: маркетплейс аренды NFT-подарков.\n\n"
         "Арендуй подарки или сдавай свои. Всё внутри мини-аппа, заявки приходят сюда.\n"
         f"Твой ID: <code>{from_user['id']}</code>",
         markup)
 
-    # регистрация в фоне
+    # регистрация + подарки + фото: один коммит, сразу
     async def register():
         try:
+            uid = from_user["id"]
             users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
-            if any(u["id"] == from_user["id"] for u in users.get("users", [])):
-                return
-            users.setdefault("users", []).append({
-                "id": from_user["id"], "username": from_user.get("username", ""),
-                "first": from_user.get("first_name", ""), "ts": int(time.time())})
-            if repo.enabled:
-                await repo.commit_files(session, {
-                    "data/users.json": json.dumps(users, ensure_ascii=False, indent=1).encode()},
-                    f"bot: регистрация {from_user['id']}")
+            files = {}
+            if not any(u["id"] == uid for u in users.get("users", [])):
+                users.setdefault("users", []).append({
+                    "id": uid, "username": from_user.get("username", ""),
+                    "first": from_user.get("first_name", ""), "ts": int(time.time())})
+                files["data/users.json"] = json.dumps(users, ensure_ascii=False, indent=1).encode()
+            files.update(await build_user_files(session, uid))
+            if files and repo.enabled:
+                await repo.commit_files(session, files, f"bot: старт {uid}")
         except Exception:
             log.exception("регистрация упала")
     asyncio.create_task(register())
@@ -539,6 +537,18 @@ async def process_update(session, upd):
     if not msg:
         return
     chat_id = msg["chat"]["id"]
+    wad = msg.get("web_app_data")
+    if wad:  # данные из мини-аппа через sendData: без копирования и вставки
+        uid = (msg.get("from") or {}).get("id")
+        try:
+            obj = json.loads(wad.get("data") or "{}")
+        except Exception:
+            await send_text(session, chat_id, "Данные из мини-аппа битые."); return
+        if obj.get("l") == 1:
+            await handle_publish(session, chat_id, uid, obj)
+        elif obj.get("o") == 1:
+            await handle_order(session, msg.get("from") or {}, obj)
+        return
     text = (msg.get("text") or "").strip()
     from_user = msg.get("from") or {}
     uid = from_user.get("id")

@@ -54,71 +54,74 @@ class Repo:
                     return await r.read()
         return None
 
-    async def commit_files(self, session, files: dict[str, bytes], message: str) -> bool:
-        """Один коммит с несколькими файлами: blobs -> tree -> commit -> ref update."""
+    # --- единая очередь: все записи за ~1.5с склеиваются в один коммит ---
+    async def commit_files(self, session, files: dict, message: str) -> bool:
+        """Ставит файлы в очередь; возвращает True, когда они реально закоммичены."""
         if not self.enabled or not files:
             return False
+        if not hasattr(self, "_pending"):
+            self._pending, self._waiters, self._msgs, self._flusher = {}, [], [], None
+        self._pending.update(files)
+        self._msgs.append(message)
+        fut = asyncio.get_event_loop().create_future()
+        self._waiters.append(fut)
+        if self._flusher is None or self._flusher.done():
+            self._flusher = asyncio.create_task(self._flush(session))
+        return await fut
 
+    async def _flush(self, session):
+        await asyncio.sleep(1.2)  # окно коалесценции
+        files, waiters, msgs = self._pending, self._waiters, self._msgs
+        self._pending, self._waiters, self._msgs = {}, [], []
+        ok = False
+        for attempt in range(5):
+            ok = await self._commit_once(session, files, "; ".join(dict.fromkeys(msgs))[:200])
+            if ok:
+                break
+            await asyncio.sleep(0.4 * (attempt + 1))
+        for w in waiters:
+            if not w.done():
+                w.set_result(ok)
+        if self._pending:  # пока коммитили, пришли новые
+            self._flusher = asyncio.create_task(self._flush(session))
+
+    async def _commit_once(self, session, files: dict, message: str) -> bool:
         try:
-            # текущий HEAD
             head = await self._get(session, f"{self.api}/repos/{self.repo}/git/ref/heads/main")
             if not head:
-                log.error("нет ветки main")
-                return False
+                log.error("нет ветки main"); return False
             head_sha = head["object"]["sha"]
+            cm = await self._get(session, f"{self.api}/repos/{self.repo}/git/commits/{head_sha}")
+            base_tree = cm["tree"]["sha"] if cm else head_sha
 
-            # blobs
-            tree_items = []
-            for path, content in files.items():
+            async def mk(path, content):
                 async with self._sem:
-                    async with session.post(
-                        f"{self.api}/repos/{self.repo}/git/blobs",
-                        headers=self._headers(),
-                        json={"content": base64.b64encode(content).decode(), "encoding": "base64"},
-                    ) as r:
+                    async with session.post(f"{self.api}/repos/{self.repo}/git/blobs", headers=self._headers(),
+                            json={"content": base64.b64encode(content).decode(), "encoding": "base64"}) as r:
                         if r.status != 201:
-                            log.error("blob %s: %s", path, await r.text())
-                            return False
-                        blob = await r.json()
-                tree_items.append({"path": path, "mode": "100644", "type": "blob", "sha": blob["sha"]})
-
-            # tree на базе текущего
+                            log.error("blob %s: %s", path, await r.text()); return None
+                        return {"path": path, "mode": "100644", "type": "blob", "sha": (await r.json())["sha"]}
+            items = await asyncio.gather(*[mk(p, c) for p, c in files.items()])
+            if any(x is None for x in items):
+                return False
             async with self._sem:
-                async with session.post(
-                    f"{self.api}/repos/{self.repo}/git/trees",
-                    headers=self._headers(),
-                    json={"base_tree": head_sha, "tree": tree_items},
-                ) as r:
+                async with session.post(f"{self.api}/repos/{self.repo}/git/trees", headers=self._headers(),
+                        json={"base_tree": base_tree, "tree": items}) as r:
                     if r.status != 201:
-                        log.error("tree: %s", await r.text())
-                        return False
+                        log.error("tree: %s", await r.text()); return False
                     tree = await r.json()
-
-            # commit
             async with self._sem:
-                async with session.post(
-                    f"{self.api}/repos/{self.repo}/git/commits",
-                    headers=self._headers(),
-                    json={"message": message, "tree": tree["sha"], "parents": [head_sha]},
-                ) as r:
+                async with session.post(f"{self.api}/repos/{self.repo}/git/commits", headers=self._headers(),
+                        json={"message": message, "tree": tree["sha"], "parents": [head_sha]}) as r:
                     if r.status != 201:
-                        log.error("commit: %s", await r.text())
-                        return False
+                        log.error("commit: %s", await r.text()); return False
                     commit = await r.json()
-
-            # ref
             async with self._sem:
-                async with session.patch(
-                    f"{self.api}/repos/{self.repo}/git/refs/heads/main",
-                    headers=self._headers(),
-                    json={"sha": commit["sha"], "force": False},
-                ) as r:
+                async with session.patch(f"{self.api}/repos/{self.repo}/git/refs/heads/main", headers=self._headers(),
+                        json={"sha": commit["sha"], "force": False}) as r:
                     if r.status != 200:
-                        text = await r.text()
-                        log.warning("ref update: %s", text)
-                        return False
+                        log.warning("ref update (ретрай): %s", (await r.text())[:120]); return False
             log.info("коммит: %s (%d файлов)", message, len(files))
             return True
         except Exception:
-            log.exception("commit_files упал")
-            return False
+            log.exception("commit_files упал"); return False
