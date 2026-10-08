@@ -420,10 +420,16 @@ function drawMine() {
   if (S.uid === "0") { box.innerHTML = `<div class="empty">Открой мини-апп через Telegram.</div>`; return; }
   const list = mergeGifts();
   if (!list.length) {
-    const scanning = (CONFIG.scanToken && !S.liveTs) || S.myGifts === "pending";
-    box.innerHTML = scanning
-      ? Array.from({ length: 3 }, () => `<div class="lrow skl"><div class="lthumb sk-block"></div><div class="lmeta"><b class="sk-line w60"></b><span class="sk-line w40"></span></div></div>`).join("")
-      : `<div class="empty"><b>Нет подарков</b>Подарки появятся, когда их откроют в профиле Telegram.</div>`;
+    const scanning = ((CONFIG.scanToken && !S.liveTs) || S.myGifts === "pending") && !S._scanGaveUp;
+    if (scanning) {
+      box.innerHTML = Array.from({ length: 3 }, () => `<div class="lrow skl"><div class="lthumb sk-block"></div><div class="lmeta"><b class="sk-line w60"></b><span class="sk-line w40"></span></div></div>`).join("");
+      // одноразовый таймер: если скан затянулся, показываем CTA (без циклов перерисовки)
+      if (!S._scanTmr) S._scanTmr = setTimeout(() => { if (mergeGifts().length) return; if (S.myGifts === "pending" || (CONFIG.scanToken && !S.liveTs && !mergeGifts().length)) { S._scanTmr = 0; S._scanGaveUp = true; drawMine(); } }, 12000);
+      return;
+    }
+    box.innerHTML = `<div class="empty"><b>Подарки не найдены</b>Нажми «Сканировать» — откроется чат с ботом, отправь любое сообщение, и твои подарки появятся через пару секунд.<button class="btn" id="scancta" style="margin:14px auto 0;max-width:240px">Сканировать мой профиль</button><span class="dim" style="margin-top:10px">Апп сам обновится, когда бот просканирует.</span></div>`;
+    const cta = $("#scancta");
+    if (cta) cta.onclick = () => openTg(`https://t.me/${CONFIG.botUsername}?start=scan`);
     return;
   }
   const repoIds = new Set((Array.isArray(S.myGifts) ? S.myGifts : []).map((g) => g.gid));
