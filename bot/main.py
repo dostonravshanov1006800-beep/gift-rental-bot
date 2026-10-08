@@ -525,6 +525,11 @@ async def handle_start(session, chat_id, from_user, args=""):
             "reply_markup": {"keyboard": [[{"text": "Маркет", "web_app": {"url": app_url}},
                                             {"text": "Сдать подарок", "web_app": {"url": app_url + "&m=pub"}}]],
                              "resize_keyboard": True, "is_persistent": True}})
+    if args == "pub":
+        await send_text(session, chat_id,
+            "Почти готово! Нажми кнопку «Сдать подарок» внизу — публикация завершится автоматически.",
+            markup)
+        return
     if args == "scan" and app_url:
         await send_text(session, chat_id,
             "Профиль сканируется ✅\nЧерез пару секунд открой мини-апп — твои подарки будут во вкладке «Профиль».\n"

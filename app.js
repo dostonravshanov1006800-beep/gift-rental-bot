@@ -574,11 +574,27 @@ function buildListing() {
 // (3) ждём подтверждения из каталога, (4) если не пришло — честный фолбэк, а не вечное «Публикую…».
 // sendData по докам Telegram работает только при запуске с keyboard button и ЗАКРЫВАЕТ мини-апп.
 // Надёжный признак доставки один: апп закрылся. Если через 1.6с он ещё жив, доставки не было.
+// намерение публикации: переживает закрытие аппа (localStorage), uid-связанное
+const PUB_INTENT_KEY = "gr_pub_intent_v1";
+function loadPubIntent() { try { const v = JSON.parse(localStorage.getItem(PUB_INTENT_KEY) || "null"); return v && v.uid === S.uid ? v : null; } catch (e) { return null; } }
+function savePubIntent(attempts) { try { localStorage.setItem(PUB_INTENT_KEY, JSON.stringify({ uid: S.uid, ts: Date.now(), attempts: attempts || 0 })); } catch (e) {} }
+function clearPubIntent() { try { localStorage.removeItem(PUB_INTENT_KEY); } catch (e) {} }
+// автопубликация: апп открыт нижней кнопкой «Сдать подарок» (m=pub), намерение свежее -> шлём sendData сразу
+function maybeAutoPublish() {
+  if (!_pubMode || S.uid === "0") return;
+  const it = loadPubIntent();
+  if (!it) return;
+  if (Date.now() - it.ts > 10 * 60 * 1000) { clearPubIntent(); return; }  // протухло
+  savePubIntent((it.attempts || 0) + 1);
+  toast("Завершаю публикацию…");
+  setTimeout(() => publish(true), 600);
+}
+
 // подтверждение: каталог (источник правды) совпал с тем, что отправили
 function confirmPublished() {
   if (!S._pubWant && S._pubWant !== "") return;
   if (myCatalogKey() !== S._pubWant) return;
-  S._pubWant = null; haptic("ok");
+  S._pubWant = null; haptic("ok"); clearPubIntent();
   toast(S._pubWasEmpty ? "Снято с аренды" : "Опубликовано в каталоге");
   const btn = $("#pub"); if (btn) btn.classList.remove("busy");
 }
@@ -611,15 +627,27 @@ async function publish(force) {
   if (tried) {
     // если Telegram принял sendData, мини-апп закроется; живой апп через 1.6с = доставки не было
     await new Promise((r) => setTimeout(r, 1600));
-    if (document.hidden) return;
+    if (document.hidden) { clearPubIntent(); return; }  // доставка подтверждена закрытием: публикация у бота
   }
-  // sendData не доставил (запуск не с keyboard button): рабочий путь без ожидания в пустоту
+  // sendData не доставил (апп открыт из inline-кнопки или menu-кнопки): запоминаем намерение,
+  // публикация завершится сама, как только юзер откроет апп нижней кнопкой «Сдать подарок»
   if (btn) btn.classList.remove("busy");
-  const payload = b64e(raw);
-  if (payload.length > 3900) return toast("Слишком много подарков за раз: выключи часть");
-  if (!(await copy(payload))) return toast("Не удалось скопировать");
-  toast("Скопировано. Откроется бот: вставь и отправь");
-  setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}`), 700);
+  const intent = loadPubIntent();
+  if ((intent ? (intent.attempts || 0) : 0) >= 1) {
+    // второй заход не удался тоже -> запасной путь: копипаст-команда в чат бота
+    const payload = b64e(raw);
+    if (payload.length <= 3900 && await copy(payload)) {
+      toast("Откроется бот: нажми «Сдать подарок» внизу (публикация сама завершится). Или вставь скопированное и отправь.");
+      setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}?start=pub`), 900);
+      return;
+    }
+    toast("Не удалось отправить. Нажми «Сдать подарок» внизу в чате бота и попробуй снова.");
+    return;
+  }
+  savePubIntent();
+  haptic("ok");
+  toast("Откроется бот: нажми «Сдать подарок» внизу — публикация завершится сама.");
+  setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}?start=pub`), 1100);
 }
 
 async function shareShowcase() {
@@ -794,6 +822,7 @@ async function init() {
   setTab(_pubMode ? "profile" : "market");
   await Promise.all([loadCatalog(), loadMine(), loadOrders()]);
   render();
+  maybeAutoPublish();
   autoPollMine();
 }
 
