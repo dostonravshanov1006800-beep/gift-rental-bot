@@ -85,7 +85,21 @@ function save(key, obj) {
 /* ============================================================
  * state
  * ============================================================ */
-const tgUser = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) || null;
+// пользователь: SDK -> initData -> хэш URL (#tgWebAppData) -> sessionStorage. SDK может не успеть загрузиться.
+function parseTgUser() {
+  const fromQS = (qs) => { try { const u = new URLSearchParams(qs).get("user"); return u ? JSON.parse(u) : null; } catch (e) { return null; } };
+  let u = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+  if (!u && tg && tg.initData) u = fromQS(tg.initData);
+  if (!u) {
+    try { const h = new URLSearchParams(location.hash.replace(/^#/, "")).get("tgWebAppData"); if (h) u = fromQS(h); } catch (e) {}
+  }
+  try {
+    if (u && u.id) sessionStorage.setItem("gr_tguser", JSON.stringify(u));
+    else { const s = sessionStorage.getItem("gr_tguser"); if (s) u = JSON.parse(s); }
+  } catch (e) {}
+  return u && u.id ? u : null;
+}
+const tgUser = parseTgUser();
 const S = {
   tab: "market",
   uid: tgUser ? String(tgUser.id) : "0",
