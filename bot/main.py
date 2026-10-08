@@ -369,9 +369,8 @@ async def handle_order(session, from_user, obj):
     if coid:
         dup = next((o for o in orders.get("orders", []) if str(o.get("coid")) == coid), None)
         if dup:
-            # заказ уже оформлен (повторная автодоводка): дублируем только подтверждение клиенту
-            await send_text(session, from_user["id"],
-                f"✅ Заказ #{dup.get('id')} уже отправлен арендодателю. Он свяжется с тобой.")
+            # дубль доставки (медленный телефон не пометил апп скрытым): молча пропускаем,
+            # клиент и арендодатель уже получили уведомления, шум в чате не нужен
             return
     seq = int(orders.get("seq") or 0) + 1
     orders["seq"] = seq

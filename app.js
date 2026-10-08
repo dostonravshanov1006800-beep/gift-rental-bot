@@ -352,6 +352,11 @@ async function sendOrder(obj, showSheetToast) {
   $("#overlay").hidden = true;
   let tried = false;
   try { if (_canSendData()) { tg.sendData(raw); tried = true; } } catch (e) {}
+  if (tried && _kbMode) {
+    // вход с нижней кнопки: Telegram всегда закрывает апп и доставляет sendData.
+    // Не ждём document.hidden (на медленных телефонах он не срабатывает -> дубли заказов).
+    clearOrdIntent(); return;  // доставлено, бот уведомит арендодателя
+  }
   if (tried) {
     await new Promise((r) => setTimeout(r, 1600));
     if (document.hidden) { clearOrdIntent(); return; }  // доставлено, бот уведомит арендодателя
@@ -384,11 +389,9 @@ function maybeAutoOrder() {
   setTimeout(() => { try { tg.sendData(it.raw); } catch (e) {} }, 500);
   // если доставка прошла — апп закроется; остаёмся на чек-поинте подтверждения ниже
   setTimeout(() => {
-    const still = loadOrdIntent();
-    if (still && !document.hidden) {
-      toast("Откроется бот: нажми «Маркет» внизу — заказ дойдёт сам.");
-      setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}?start=ord`), 700);
-    } else clearOrdIntent();
+    // kb-режим: sendData доставлен (Telegram закрывает апп). Если апп почему-то жив,
+    // считаем доставленным и молча чистим интент: повторная отправка дала бы дубль.
+    clearOrdIntent();
   }, 2600);
 }
 
@@ -645,6 +648,7 @@ function maybeAutoPublish() {
   const it = loadPubIntent();
   if (!it) return;
   if (Date.now() - it.ts > 10 * 60 * 1000) { clearPubIntent(); return; }  // протухло
+  if (wantKey() === myCatalogKey()) { clearPubIntent(); return; }  // уже опубликовано, дубль не нужен
   savePubIntent((it.attempts || 0) + 1);
   toast("Завершаю публикацию…");
   setTimeout(() => publish(true), 600);
