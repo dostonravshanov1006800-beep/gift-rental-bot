@@ -481,7 +481,8 @@ async def handle_start(session, chat_id, from_user, args=""):
         # reply-клавиатура: только из неё мини-апп может вызвать sendData (публикация без копирования)
         await tg_call(session, "sendMessage", {
             "chat_id": chat_id, "text": "Кнопка снизу: сдать подарок в аренду в один тап.",
-            "reply_markup": {"keyboard": [[{"text": "Сдать подарок", "web_app": {"url": app_url + "?m=pub"}}]],
+            "reply_markup": {"keyboard": [[{"text": "Маркет", "web_app": {"url": app_url}},
+                                            {"text": "Сдать подарок", "web_app": {"url": app_url + "?m=pub"}}]],
                              "resize_keyboard": True, "is_persistent": True}})
     await send_text(session, chat_id,
         "<b>Gift Rent</b>: маркетплейс аренды NFT-подарков.\n\n"

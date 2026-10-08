@@ -294,7 +294,12 @@ function openDetail(g) {
   if ($("#nft")) $("#nft").onclick = () => openTg(`https://t.me/nft/${encodeURIComponent(String(g.g).toLowerCase())}`);
   const ord = $("#ord");
   if (ord) ord.onclick = async () => {
-    const payload = b64e(JSON.stringify({ o: 1, lu: String(o.uid), g: g.g, p: g.p || "", cur: g.cur || "", per: g.per || "", c: ($("#oc").value || "").slice(0, 80) }));
+    const raw = JSON.stringify({ o: 1, lu: String(o.uid), g: g.g, p: g.p || "", cur: g.cur || "", per: g.per || "", c: ($("#oc").value || "").slice(0, 80) });
+    // sendData: мгновенно, без копирования (доступен при входе с reply-кнопки)
+    try {
+      if (tg && tg.sendData) { haptic("ok"); toast("Заявка отправляется…"); $("#overlay").hidden = true; tg.sendData(raw); return; }
+    } catch (e) { /* не поддержан — фолбэк ниже */ }
+    const payload = b64e(raw);
     if (!(await copy(payload))) return toast("Не удалось скопировать заказ");
     haptic("ok"); toast("Заказ скопирован. Вставь его в чат бота.");
     $("#overlay").hidden = true;
