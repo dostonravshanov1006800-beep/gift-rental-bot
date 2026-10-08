@@ -67,7 +67,8 @@ async def send_text(session, chat_id, text, reply_markup=None):
 # ---------------------------------------------------------------- gifts
 async def fetch_user_gifts(session, user_id) -> list[dict]:
     """getUserGifts с пагинацией, только unique (NFT)."""
-    gifts, offset = [], ""
+    gifts, offset = [], []
+    _seen: dict[str, int] = {}
     for _ in range(20):
         data = await tg_call(session, "getUserGifts",
                              {"user_id": int(user_id), "offset": offset, "limit": 100})
@@ -82,8 +83,12 @@ async def fetch_user_gifts(session, user_id) -> list[dict]:
                 u = g.get("gift", {})
                 st = u.get("sticker", {}) or {}
                 thumb = st.get("thumbnail", {}) or {}
+                base = u.get("id") or ""
+                _seen[base] = _seen.get(base, 0) + 1
+                inst = str(g.get("owned_gift_id") or "") or f"i{_seen[base]}"
                 gifts.append({
-                    "gid": u.get("id") or "",
+                    "gid": base,
+                    "inst": inst,
                     "name": u.get("title") or st.get("emoji") or "",
                     "uniq": "", "num": None,
                     "model": "", "symbol": "", "backdrop": "",
@@ -101,8 +106,12 @@ async def fetch_user_gifts(session, user_id) -> list[dict]:
                 colors = backdrop.get("colors", {})
                 st = model.get("sticker", {}) or {}
                 thumb = st.get("thumbnail", {}) or {}
+                base = u.get("name") or f"{u.get('gift_id')}#{u.get('number')}"
+                _seen[base] = _seen.get(base, 0) + 1
+                inst = str(g.get("owned_gift_id") or "") or f"i{_seen[base]}"
                 gifts.append({
-                    "gid": u.get("name") or f"{u.get('gift_id')}#{u.get('number')}",
+                    "gid": base,
+                    "inst": inst,
                     "name": u.get("base_name", ""),
                     "uniq": u.get("name", ""),
                     "num": u.get("number"),
@@ -178,7 +187,7 @@ async def ensure_keyboard(session, chat_id, from_user):
     url = f"{base}?u={uid}"
     await tg_call(session, "sendMessage", {
         "chat_id": chat_id, "text": "Кнопки внизу: «Маркет» и «Сдать подарок». Публикация и заказы через них мгновенные.",
-        "reply_markup": {"keyboard": [[{"text": "Маркет", "web_app": {"url": url}},
+        "reply_markup": {"keyboard": [[{"text": "Маркет", "web_app": {"url": url + "&m=mkt"}},
                                         {"text": "Сдать подарок", "web_app": {"url": url + "&m=pub"}}]],
                          "resize_keyboard": True, "is_persistent": True}})
 LAST_SEEN: dict[int, float] = {}
@@ -274,21 +283,35 @@ async def rebuild_catalog(session):
     return json.dumps({"updated": int(time.time()), "items": items}, ensure_ascii=False).encode()
 
 
+def find_gift(gifts, key):
+    """Ключ = gid (легаси) или gid#inst (уникальный экземпляр)."""
+    if "#" in str(key):
+        base, inst = str(key).split("#", 1)
+        for r in gifts:
+            if r.get("gid") == base and str(r.get("inst") or "") == inst:
+                return r
+        return None
+    for r in gifts:
+        if r.get("gid") == key:
+            return r
+    return None
+
+
 async def handle_publish(session, chat_id, from_id, obj):
     """Лендлорд публикует листинг (тип l=1). Сверка с getUserGifts, запись, пересборка каталога."""
     if str(obj.get("uid")) != str(from_id):
         await send_text(session, chat_id, "Отказано: uid не совпадает с твоим аккаунтом.")
         return
-    real = {g["gid"]: g for g in await fetch_user_gifts(session, from_id)}
+    real = await fetch_user_gifts(session, from_id)
     out, fake = [], []
     now = int(time.time())
     for g in obj.get("gifts", []):
-        r = real.get(g.get("g"))
+        r = find_gift(real, g.get("g"))
         if not r:
             fake.append(str(g.get("g")))
             continue
         out.append({
-            "g": r["gid"], "n": r.get("name", ""), "m": r.get("model", ""), "s": r.get("symbol", ""),
+            "g": str(g.get("g")), "inst": r.get("inst", ""), "n": r.get("name", ""), "m": r.get("model", ""), "s": r.get("symbol", ""),
             "num": r.get("num"), "cc": r.get("cc"), "ec": r.get("ec"),
             "mr": r.get("mr"), "sr": r.get("sr"), "br": r.get("br"), "b": r.get("backdrop", ""),
             "t": f"assets/gifts/{r['th_fuid']}.webp" if r.get("th_fuid") else "",
@@ -334,7 +357,7 @@ async def handle_order(session, from_user, obj):
 
     raw = await repo.get_raw(session, f"data/gifts/{lu}.json")
     gifts = json.loads(raw).get("gifts", []) if raw else []
-    gift = next((g for g in gifts if g.get("gid") == gid), None)
+    gift = find_gift(gifts, gid)
     if not gift:
         await send_text(session, from_user["id"],
             "Этого подарка нет в коллекции арендодателя. Витрина устарела.")
@@ -342,10 +365,18 @@ async def handle_order(session, from_user, obj):
 
     orders = await repo.get_json(session, f"data/orders/{lu}.json", {"orders": [], "seq": 0}) \
         or {"orders": [], "seq": 0}
+    coid = str(obj.get("coid") or "")
+    if coid:
+        dup = next((o for o in orders.get("orders", []) if str(o.get("coid")) == coid), None)
+        if dup:
+            # заказ уже оформлен (повторная автодоводка): дублируем только подтверждение клиенту
+            await send_text(session, from_user["id"],
+                f"✅ Заказ #{dup.get('id')} уже отправлен арендодателю. Он свяжется с тобой.")
+            return
     seq = int(orders.get("seq") or 0) + 1
     orders["seq"] = seq
     orders.setdefault("orders", []).append({
-        "id": str(seq),
+        "id": str(seq), "coid": coid,
         "gid": gid, "name": gift.get("name", ""), "num": gift.get("num"),
         "price": str(obj.get("p") or ""), "cur": obj.get("cur") or "",
         "per": obj.get("per") or "",
@@ -374,13 +405,16 @@ async def handle_order(session, from_user, obj):
 
     cust = ("@" + from_user["username"]) if from_user.get("username") \
         else f"tg://user?id={from_user['id']}"
+    num_part = f" #{gift.get('num')}" if gift.get("num") not in (None, "") else ""
+    price_part = f"{obj.get('p')} {obj.get('cur','')} / {obj.get('per','')}" \
+        if obj.get("p") else "по договорённости"
     await send_text(session, int(lu),
         f"📦 <b>Новый заказ #{seq}</b>\n"
-        f"🎁 {gift.get('name','')} #{gift.get('num','')}\n"
-        f"💰 {obj.get('p') or 'по договорённости'} {obj.get('cur','')} / {obj.get('per','')}\n"
+        f"🎁 {gift.get('name','')}{num_part}\n"
+        f"💰 {price_part}\n"
         f"👤 Клиент: {cust} (ID {from_user['id']})\n"
         + (f"💬 {obj.get('c','')[:150]}\n" if obj.get("c") else "")
-        + f"\nЦену client указал сам: сверься с витриной. Ответь клиенту, договорись о залоге и сроках.\n"
+        + f"\nЦену клиент указал сам: сверься с витриной. Ответь клиенту, договорись о залоге и сроках.\n"
           f"/done {seq} — выполнен · /cancel {seq} — отмена")
 
     who = ("@" + landlord["username"]) if landlord.get("username") else "арендодатель"
@@ -398,7 +432,8 @@ async def handle_orders_list(session, from_id):
     for it in items[-10:]:
         ts = time.strftime("%d.%m %H:%M", time.gmtime(it.get("ts", 0)))
         mark = {"new": "🆕", "done": "✅", "cancelled": "✖"}.get(it.get("status"), "•")
-        lines.append(f"{mark} #{it['id']} {it.get('name','')} #{it.get('num','')} "
+        num_part = f" #{it.get('num')}" if it.get("num") not in (None, "") else ""
+        lines.append(f"{mark} #{it['id']} {it.get('name','')}{num_part} "
                      f"— {it.get('price') or '—'} {it.get('cur','')} ({ts})")
     lines.append("\n/done <№> — выполнить, /cancel <№> — отменить")
     await send_text(session, from_id, "\n".join(lines))

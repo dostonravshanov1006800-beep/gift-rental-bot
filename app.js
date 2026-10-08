@@ -189,7 +189,9 @@ async function loadOrders() {
 /* ============================================================
  * shell: tabs
  * ============================================================ */
-const _pubMode = new URLSearchParams(location.search).get("m") === "pub";
+const _mParam = new URLSearchParams(location.search).get("m") || "";
+const _pubMode = _mParam === "pub";
+const _kbMode = ["pub", "mkt", "m"].includes(_mParam);  // вход с reply-кнопки: sendData доставляет
 const _fromMenu = new URLSearchParams(location.search).get("src") === "menu";
 
 function openAddRent() {
@@ -267,18 +269,12 @@ function renderMarket() {
   $("#topbar").innerHTML = `<div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="q" type="search" placeholder="Поиск подарков и арендодателей" value="${esc(S.q)}"></div>`;
   const curs = ["all", ...CURRENCIES];
   $("#view").innerHTML = `
-    <div class="infobanner" id="ib">
-      <div class="ib-row"><span class="ib-name">\u{1F381} Gift Rent</span><span class="ib-found">основатель @dostonxoja</span></div>
-      <div class="ib-text">Маркетплейс аренды подарков Telegram. Подключи профиль — подарки подхватятся автоматически.</div>
-      <button class="btn out sm" id="ibmore">О сервисе и условиях</button>
-    </div>
     <div class="chips">
       ${curs.map((c) => `<button class="chip ${S.cur === c ? "on" : ""}" data-cur="${c}">${c === "all" ? "Все" : c}</button>`).join("")}
       <button class="chip ${S.sort === "asc" ? "on" : ""}" data-sort="asc">Дешевле</button>
       <button class="chip ${S.sort === "desc" ? "on" : ""}" data-sort="desc">Дороже</button>
     </div>
     <div id="grid"></div>`;
-  $("#ibmore").onclick = openAbout;
   $("#q").addEventListener("input", (e) => { S.q = e.target.value; drawGrid(); });
   $$("[data-cur]").forEach((b) => b.addEventListener("click", () => { S.cur = b.dataset.cur; renderMarket(); }));
   $$("[data-sort]").forEach((b) => b.addEventListener("click", () => { S.sort = S.sort === b.dataset.sort ? "new" : b.dataset.sort; renderMarket(); }));
@@ -337,20 +333,64 @@ function openDetail(g) {
   $("#x").onclick = () => ($("#overlay").hidden = true);
   if ($("#nft")) $("#nft").onclick = () => openTg(`https://t.me/nft/${encodeURIComponent(String(g.g).toLowerCase())}`);
   const ord = $("#ord");
-  if (ord) ord.onclick = async () => {
-    const raw = JSON.stringify({ o: 1, lu: String(o.uid), g: g.g, p: g.p || "", cur: g.cur || "", per: g.per || "", c: ($("#oc").value || "").slice(0, 80) });
-    // sendData: мгновенно, без копирования (доступен при входе с reply-кнопки)
-    try {
-      if (tg && tg.sendData) { haptic("ok"); toast("Заявка отправляется…"); $("#overlay").hidden = true; tg.sendData(raw); return; }
-    } catch (e) { /* не поддержан — фолбэк ниже */ }
-    const payload = b64e(raw);
-    if (!(await copy(payload))) return toast("Не удалось скопировать заказ");
-    haptic("ok"); toast("Заказ скопирован. Вставь его в чат бота.");
-    $("#overlay").hidden = true;
-    setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}`), 600);
-  };
+  if (ord) ord.onclick = async () => sendOrder(
+      { o: 1, coid: S.uid + "-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        lu: String(o.uid), g: g.g, p: g.p || "", cur: g.cur || "", per: g.per || "", c: ($("#oc").value || "").slice(0, 80) });
+
 }
 document.addEventListener("click", (e) => { if (e.target === $("#overlay")) $("#overlay").hidden = true; });
+
+const ORD_INTENT_KEY = "gr_ord_intent_v1";
+function loadOrdIntent() { try { const v = JSON.parse(localStorage.getItem(ORD_INTENT_KEY) || "null"); return v && v.uid === S.uid ? v : null; } catch (e) { return null; } }
+function saveOrdIntent(raw, attempts) { try { localStorage.setItem(ORD_INTENT_KEY, JSON.stringify({ uid: S.uid, ts: Date.now(), attempts: attempts || 0, raw })); } catch (e) {} }
+function clearOrdIntent() { try { localStorage.removeItem(ORD_INTENT_KEY); } catch (e) {} }
+
+// заказ доставлен боту только если sendData закрыл апп; живой апп через 1.6с = доставки не было
+async function sendOrder(obj, showSheetToast) {
+  const raw = JSON.stringify(obj);
+  haptic("ok"); toast("Заказ отправляется…");
+  $("#overlay").hidden = true;
+  let tried = false;
+  try { if (_canSendData()) { tg.sendData(raw); tried = true; } } catch (e) {}
+  if (tried) {
+    await new Promise((r) => setTimeout(r, 1600));
+    if (document.hidden) { clearOrdIntent(); return; }  // доставлено, бот уведомит арендодателя
+  }
+  // апп открыт не с reply-кнопки: запоминаем заказ, доводим при следующем входе с клавиатуры
+  const it = loadOrdIntent();
+  const attempts = (it ? (it.attempts || 0) : 0) + (tried ? 1 : 0);
+  saveOrdIntent(raw, attempts);
+  if (attempts >= 2) {
+    // второй раз не доставилось: запасной путь — копипаст в чат бота
+    const payload = b64e(raw);
+    if (await copy(payload)) {
+      toast("Заказ скопирован. Вставь его в чат бота и отправь.");
+      setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}`), 600);
+    } else toast("Не удалось скопировать заказ. Попробуй ещё раз.");
+    return;
+  }
+  toast("Откроется бот: нажми кнопку «Маркет» внизу — заказ дойдёт сам.");
+  setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}?start=ord`), 700);
+}
+
+// автодоводка: апп открыт с reply-клавиатуры («Маркет»/«Сдать подарок») + есть свежий заказ
+function maybeAutoOrder() {
+  if (!_kbMode || S.uid === "0") return;
+  const it = loadOrdIntent();
+  if (!it) return;
+  if (Date.now() - it.ts > 10 * 60 * 1000) { clearOrdIntent(); return; }
+  saveOrdIntent(it.raw, (it.attempts || 0) + 1);
+  toast("Доставляю твой заказ…");
+  setTimeout(() => { try { tg.sendData(it.raw); } catch (e) {} }, 500);
+  // если доставка прошла — апп закроется; остаёмся на чек-поинте подтверждения ниже
+  setTimeout(() => {
+    const still = loadOrdIntent();
+    if (still && !document.hidden) {
+      toast("Откроется бот: нажми «Маркет» внизу — заказ дойдёт сам.");
+      setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}?start=ord`), 700);
+    } else clearOrdIntent();
+  }, 2600);
+}
 
 /* ============================================================
  * ORDERS
@@ -368,7 +408,7 @@ function renderOrders() {
     <div class="seg"><button data-s="in" class="${S.ordersSeg === "in" ? "on" : ""}">Входящие · ${inc.length}</button><button data-s="out" class="${S.ordersSeg === "out" ? "on" : ""}">Мои · ${out.length}</button></div>
     ${list.length ? list.map((o) => `
       <div class="ocard">
-        <div class="ohead"><b>№${esc(o.id)} · ${esc(o.name || "")} #${esc(o.num ?? "")}</b>${st(o.status)}</div>
+        <div class="ohead"><b>№${esc(o.id)} · ${esc(o.name || "")}${o.num != null ? " #" + esc(o.num) : ""}</b>${st(o.status)}</div>
         <div class="osub">${o.price ? esc(money(o.price)) + " " + esc(o.cur || "") + " / " + esc(o.per || "") : "по договорённости"} · ${esc(when(o.ts))}</div>
         ${S.ordersSeg === "in"
           ? `<div class="ocl">Клиент: ${o.client_username ? "@" + esc(o.client_username) : "ID " + esc(o.client_uid)}${o.comment ? " · «" + esc(o.comment) + "»" : ""}</div>
@@ -387,7 +427,8 @@ function renderOrders() {
 /* ============================================================
  * PROFILE (Instagram-style) + размещение подарков
  * ============================================================ */
-function myListedCount() { return Array.isArray(S.myGifts) ? S.myGifts.filter((g) => (S.terms[g.gid] || {}).on).length : 0; }
+function termFor(g) { return S.terms[ikey(g)] || S.terms[g.gid] || {}; }  // читаем с фолбэком на старые ключи
+function myListedCount() { return Array.isArray(S.myGifts) ? S.myGifts.filter((g) => (termFor(g)).on).length : 0; }
 
 async function startLiveScan() {
   if (!CONFIG.scanToken || S.uid === "0") return;
@@ -426,7 +467,9 @@ function renderProfile() {
     <div class="scanstate" id="scanstate"></div>
     <div id="mine"></div>
     <div class="hint">Включи переключатель, укажи цену и срок. Бот сверит подарки с твоим профилем, публикация мгновенная.</div>
-    <button class="btn sec sm" id="about" style="margin:14px auto;display:block">О сервисе и условиях</button>`;
+    ${faqHtml()}
+    <button class="btn sec sm" id="about" style="margin:14px auto 28px;display:block">О сервисе и условиях</button>`;
+  bindFaq();
   $("#cid").onclick = async () => {
     if (S.uid === "0") { const ok = await applyTgUser(); if (!ok) { toast("Открываю бота для входа…"); setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}?start=login`), 400); } return; }
     await copy(S.uid); haptic("ok"); toast("ID скопирован");
@@ -499,19 +542,20 @@ function drawMine() {
     if (cta) cta.onclick = () => { markScanAsked(); openTg(`https://t.me/${CONFIG.botUsername}?start=scan`); };
     return;
   }
-  const repoIds = new Set((Array.isArray(S.myGifts) ? S.myGifts : []).map((g) => g.gid));
+  const repoIds = new Set((Array.isArray(S.myGifts) ? S.myGifts : []).map((g) => ikey(g)));
   const listedIds = new Set((S.catalog || []).filter((c) => c.owner && String(c.owner.uid) === S.uid).map((c) => String(c.g)));
   box.innerHTML = list.map((g) => {
-    const t = S.terms[g.gid] || {};
-    const listed = listedIds.has(g.gid);
+    const k = ikey(g);
+    const t = S.terms[k] || S.terms[g.gid] || {};
+    const listed = listedIds.has(k);
     const c1 = hex(g.cc) || "#5aa7e0", c2 = hex(g.ec) || "#2b3f66";
-    return `<div class="lrow ${listed ? "is-listed" : ""}" data-g="${esc(g.gid)}">
-      <div class="lthumb" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : repoIds.has(g.gid) && g.th_fuid ? `<img src="assets/gifts/${esc(g.th_fuid)}.webp" alt="" onerror="this.remove()">` : g.th_fuid ? `<img data-livethumb="${esc(g.gid)}" alt="">` : "🎁"}</div>
-      <div class="lmeta"><b>${esc(dname(g))}${g.num != null ? " #" + esc(g.num) : ""}${g.qty > 1 ? ` <em class="qty">×${g.qty}</em>` : ""}</b><span>${esc(g.model || (g.stars ? g.stars + " ★" : ""))}${g.mr ? " · " + pct(g.mr) : ""}</span></div>
-      ${listed ? `<button class="unl" data-unl="${esc(g.gid)}">Снять</button>` : ""}
+    return `<div class="lrow ${listed ? "is-listed" : ""}" data-g="${esc(k)}">
+      <div class="lthumb" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : repoIds.has(k) && g.th_fuid ? `<img src="assets/gifts/${esc(g.th_fuid)}.webp" alt="" onerror="this.remove()">` : g.th_fuid ? `<img data-livethumb="${esc(k)}" alt="">` : "🎁"}</div>
+      <div class="lmeta"><b>${esc(dname(g))}${g.num != null ? " #" + esc(g.num) : ""}</b><span>${esc(g.model || (g.stars ? g.stars + " ★" : ""))}${g.mr ? " · " + pct(g.mr) : ""}</span></div>
+      ${listed ? `<button class="unl" data-unl="${esc(k)}">Снять</button>` : ""}
       <label class="switch"><input type="checkbox" ${t.on ? "checked" : ""}><i></i></label>
     </div>
-    <div class="pform" data-pf="${esc(g.gid)}" ${t.on ? "" : "hidden"} style="padding:0 14px 12px;border-bottom:1px solid var(--line)">
+    <div class="pform" data-pf="${esc(k)}" ${t.on ? "" : "hidden"} style="padding:0 14px 12px;border-bottom:1px solid var(--line)">
       <div class="row"><input class="inp" data-p inputmode="decimal" placeholder="Цена" value="${esc(t.p || "")}">
         <select class="inp" data-c>${CURRENCIES.map((c) => `<option ${c === (t.cur || "UZS") ? "selected" : ""}>${c}</option>`).join("")}</select>
         <select class="inp" data-r>${PERIODS.map((c) => `<option ${c === (t.per || "день") ? "selected" : ""}>${c}</option>`).join("")}</select></div>
@@ -519,14 +563,13 @@ function drawMine() {
   }).join("");
   // подаркам только из live-скана: прямая ссылка на стикер через getFile
   $$("img[data-livethumb]", box).forEach(async (el) => {
-    const gid = el.dataset.livethumb;
-    const g = list.find((x) => x.gid === gid);
+    const k = el.dataset.livethumb;
+    const g = list.find((x) => ikey(x) === k);
     if (!g) return;
     let u = await thumbUrl(g);
     if (!u) { await new Promise((r) => setTimeout(r, 900)); u = await thumbUrl(g); }
-    // дубликат-подарки имеют один gid: ставим на сам элемент, фолбэк по DOM — на случай перерисовки
     if (u && el.isConnected) el.src = u;
-    else { const cur = box.querySelector(`img[data-livethumb="${CSS.escape(gid)}"]`); if (u && cur) cur.src = u; else if (cur) cur.remove(); }
+    else if (!u && el.isConnected) el.remove();
   });
   $$("[data-unl]", box).forEach((b) => b.onclick = async (e) => {
     e.stopPropagation();
@@ -539,7 +582,7 @@ function drawMine() {
   $$(".lrow", box).forEach((row) => {
     const gid = row.dataset.g; const pf = $(`[data-pf="${CSS.escape(gid)}"]`, box);
     const t = () => (S.terms[gid] = S.terms[gid] || {});
-    $(".lmeta", row).onclick = async () => { const g = list.find((x) => x.gid === gid); if (g) openMyGiftDetail(g, repoIds.has(gid)); };
+    $(".lmeta", row).onclick = async () => { const g = list.find((x) => ikey(x) === gid); if (g) openMyGiftDetail(g, repoIds.has(ikey(g))); };
     $("input[type=checkbox]", row).onchange = (e) => { t().on = e.target.checked; pf.hidden = !e.target.checked; save(CONFIG.termsKey, S.terms); haptic(); drawPubBar(); };
     $("[data-p]", pf).oninput = (e) => { t().p = e.target.value; save(CONFIG.termsKey, S.terms); drawPubBar(); };
     $("[data-c]", pf).onchange = (e) => { t().cur = e.target.value; save(CONFIG.termsKey, S.terms); drawPubBar(); };
@@ -579,8 +622,8 @@ function openEdit() {
 }
 
 function buildListing() {
-  const gifts = mergeGifts().filter((g) => (S.terms[g.gid] || {}).on).map((g) => {
-    const t = S.terms[g.gid]; return { g: g.gid, p: t.p || "", cur: t.cur || "UZS", per: t.per || "день" };
+  const gifts = mergeGifts().filter((g) => termFor(g).on).map((g) => {
+    const t = S.terms[ikey(g)] || S.terms[g.gid] || {}; return { g: ikey(g), p: t.p || "", cur: t.cur || "UZS", per: t.per || "день" };
   });
   const u = S.user || {};
   return { l: 1, uid: S.uid, name: S.profile.name || [u.first_name, u.last_name].filter(Boolean).join(" "), uname: S.profile.uname || u.username || "", about: S.profile.about, req: S.profile.req.filter((r) => r.v), gifts };
@@ -674,7 +717,7 @@ async function publish(force) {
   const me = { uid: S.uid, name: obj.name, uname: obj.uname };
   const known = mergeGifts();
   S.catalog = (S.catalog || []).filter((c) => !(c.owner && String(c.owner.uid) === S.uid)).concat(obj.gifts.map((g) => {
-    const k = known.find((x) => x.gid === g.g) || {};
+    const k = known.find((x) => ikey(x) === g.g) || {};
     return { g: g.g, n: k.name || "", m: k.model || "", s: k.symbol || "", num: k.num, cc: k.cc, ec: k.ec, mr: k.mr, sr: k.sr, br: k.br,
       b: k.backdrop || "", t: k.th_fuid ? `assets/gifts/${k.th_fuid}.webp` : "", p: g.p, cur: g.cur, per: g.per, ts: Math.floor(Date.now() / 1000), owner: me, _local: 1 };
   }));
@@ -724,6 +767,41 @@ const ABOUT_TEXT = `
       5. Жалоба на мошенника — команда /block у бота, админ разберётся.</div>
   </div>`;
 function agreed() { try { return !!localStorage.getItem("gr_agree_" + S.uid); } catch (e) { return false; } }
+
+const FAQ_ITEMS = [
+  ["Сколько времени занимает публикация подарка?",
+   "Обычно 5–15 секунд: бот сверяет подарок с твоим профилем и обновляет каталог. С запасом закладывай до 2 минут: сеть и очередь GitHub иногда добавляют задержку. Если за 5 минут подарка в каталоге нет, нажми «Опубликовать» ещё раз (повтор безопасен) или открой приложение через кнопку «Сдать подарок» внизу чата с ботом."],
+  ["Что если нажать «Опубликовать» несколько раз?",
+   "Ничего страшного. Если состояние уже опубликовано, приложение ответит «Уже опубликовано» и ничего не отправит. Дублей не будет."],
+  ["Как сдать подарок в аренду?",
+   "Профиль → блок «Сдать подарок в аренду» → включи переключатель у нужного подарка → укажи цену, валюту и срок → нажми «Опубликовать». Каждый подарок настраивается отдельно, даже одинаковые."],
+  ["Почему моего подарка нет в списке?",
+   "Подарки подтягиваются из твоего профиля Telegram. Проверь, что они видимы: Telegram → Профиль → Подарки. Новый подарок появляется в приложении за 5–60 секунд. Если нет, нажми «Подключить сканер» один раз и вернись."],
+  ["Как снять подарок с аренды?",
+   "Профиль → у подарка в аренде нажми «Снять». Каталог обновится так же быстро, как при публикации (до 2 минут с запасом)."],
+  ["Как приходят заказы?",
+   "Клиент жмёт «Заказать аренду», а бот присылает тебе в чат уведомление: подарок, цена, клиент и комментарий. Дальше ты связываешься с клиентом в Telegram, договариваешься о залоге и сроках. Команды: /done №, /cancel №, /orders. Если уведомления нет в течение 2 минут, открой бота кнопкой «Маркет» внизу: заказ дойдёт автоматически."],
+  ["Бот молчит или кнопки не реагируют",
+   "Бот работает 24/7, но иногда перезапускается: это занимает до 5–10 минут. Подожди и повтори. Данные не теряются: незавершённые публикация и заказ запоминаются и доставляются при следующем входе через нижние кнопки."],
+  ["Слетели данные на телефоне, что делать?",
+   "Ничего вводить заново не нужно. Приложение само находит твои прошлые цены, профиль и аренды по Telegram ID. Если не подтянулось, открой профиль и подожди 10–20 секунд."],
+  ["Как оплатить и вернуть подарок?",
+   "Сервис не принимает деньги и не передаёт подарки: это P2P. Оплата, залог и возврат обсуждаются напрямую между арендодателем и клиентом по реквизитам из профиля. Проверяй собеседника и не отдавай подарок без залога."],
+  ["Куда писать, если ничего не помогло?",
+   "Основатель сервиса: @dostonxoja. Приложи свой Telegram ID из профиля и опиши, что произошло."],
+];
+function faqHtml() {
+  return `<div class="section-title">Частые вопросы (FAQ)</div>
+    <div class="faq" id="faq">${FAQ_ITEMS.map((q, i) => `
+      <div class="faq-i" data-fq="${i}"><button class="faq-q" type="button"><span>${esc(q[0])}</span><i>+</i></button><div class="faq-a" hidden>${esc(q[1])}</div></div>`).join("")}</div>`;
+}
+function bindFaq() {
+  $$("#faq .faq-q").forEach((b) => b.onclick = () => {
+    const it = b.parentElement, a = $(".faq-a", it), open = a.hidden;
+    a.hidden = !open; it.classList.toggle("open", open); $("i", b).textContent = open ? "−" : "+"; haptic();
+  });
+}
+
 function openAbout() {
   $("#sheet").innerHTML = ABOUT_TEXT + (agreed()
     ? `<div class="sheet-f"><button class="btn sec" id="abclose">Закрыть</button></div>`
@@ -775,7 +853,7 @@ async function liveScan(uid) {
         if (g.type !== "unique") {
           const stk = u.sticker || {};
           const st = stk.thumbnail || {};
-          gifts.push({ gid: u.id || "", name: u.title || stk.emoji || "", num: null,
+          gifts.push({ gid: u.id || "", inst: String(g.owned_gift_id || ""), name: u.title || stk.emoji || "", num: null,
             model: "", symbol: "", backdrop: "", cc: null, ec: null, mr: null, sr: null, br: null,
             th_fuid: st.file_unique_id, th_fid: st.file_id, p: g.type, stars: u.star_count });
           continue;
@@ -783,7 +861,7 @@ async function liveScan(uid) {
         const model = u.model || {}, symbol = u.symbol || {}, backdrop = u.backdrop || {};
         const colors = backdrop.colors || {};
         const thumb = ((model.sticker || {}).thumbnail) || {};
-        gifts.push({ gid: u.name || `${u.gift_id}#${u.number}`, name: u.base_name || "",
+        gifts.push({ gid: u.name || `${u.gift_id}#${u.number}`, inst: String(g.owned_gift_id || ""), name: u.base_name || "",
           uniq: u.name || "", num: u.number,
           model: model.name || "", symbol: symbol.name || "", backdrop: backdrop.name || "",
           cc: colors.center_color, ec: colors.edge_color,
@@ -821,24 +899,28 @@ async function thumbUrl(g) {
   return p;
 }
 
-// одинаковые обычные подарки (общий gid типа) = одна строка с количеством; NFT уникальны по имени
-function groupGifts(list) {
-  const m = new Map();
-  for (const g of list) {
-    const k = g.gid;
-    if (m.has(k)) m.get(k).qty += 1; else m.set(k, { ...g, qty: 1 });
-  }
-  return [...m.values()];
-}
+// уникальный ключ экземпляра: gid#inst. Одинаковые подарки = отдельные строки, каждый со своей ценой
+function ikey(g) { return g.gid + (g.inst ? "#" + g.inst : ""); }
 function mergeGifts() {
   // прямой скан приоритетнее: он свежее репо-данных
   const live = S.liveGifts;
-  const src = (!Array.isArray(live) || !live.length) ? (Array.isArray(S.myGifts) ? S.myGifts : []) : (() => {
-    const byGid = {};
-    (Array.isArray(S.myGifts) ? S.myGifts : []).forEach((g) => { byGid[g.gid] = g; });
-    return live.map((g) => { const repo = byGid[g.gid]; return repo && repo.t ? { ...g, t: repo.t } : g; });
+  let src = (!Array.isArray(live) || !live.length) ? (Array.isArray(S.myGifts) ? S.myGifts : []) : (() => {
+    const byIid = {};
+    (Array.isArray(S.myGifts) ? S.myGifts : []).forEach((g) => { byIid[ikey(g)] = g; });
+    return live.map((g) => { const repo = byIid[ikey(g)]; return repo && repo.t ? { ...g, t: repo.t } : g; });
   })();
-  return groupGifts(src);
+  src = src.map((g) => ({ ...g }));  // копии, чтобы не мутировать исходники
+  // у дублей без inst назначаем синтетические i1,i2,... — каждая копия отдельно, порядок стабилен
+  const seen = {};
+  src.forEach((g) => {
+    if (!g.inst) {
+      if (src.filter((x) => x.gid === g.gid).length > 1) {
+        seen[g.gid] = (seen[g.gid] || 0) + 1;
+        g.inst = "i" + seen[g.gid];
+      } else g.inst = "";
+    }
+  });
+  return src;
 }
 
 /* ============================================================
@@ -920,6 +1002,7 @@ async function init() {
   recoverTerms();
   render();
   maybeAutoPublish();
+  maybeAutoOrder();
   await recoverProfile(); if (S.tab === "profile") render();
   autoPollMine();
 }
