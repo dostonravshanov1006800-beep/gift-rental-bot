@@ -66,19 +66,24 @@ function openTg(url) { if (tg && tg.openTelegramLink && url.startsWith("https://
 const csOK = () => !!(tg && tg.CloudStorage && typeof tg.CloudStorage.getItem === "function");
 const csGet = (k) => new Promise((res) => { let d = false; const f = (v) => { if (!d) { d = true; res(v); } }; setTimeout(() => f(null), 2500); try { tg.CloudStorage.getItem(k, (e, v) => f(e ? null : v)); } catch (e) { f(null); } });
 const csSet = (k, v) => new Promise((res) => { let d = false; const f = (x) => { if (!d) { d = true; res(x); } }; setTimeout(() => f(false), 2500); try { tg.CloudStorage.setItem(k, v, (e) => f(!e)); } catch (e) { f(false); } });
+// ключи хранилища привязаны к uid: на Desktop/Web webview-хранилище общее для всех
+// аккаунтов бота, без неймспейса второй юзер устройства видел бы чужой профиль
+const skey = (key) => `${key}_${S && S.uid ? S.uid : "0"}`;
 async function load(key, dflt) {
-  let raw = csOK() ? await csGet(key) : null;
-  if (!raw) raw = localStorage.getItem(key);
+  const k = skey(key);
+  let raw = csOK() ? await csGet(k) : null;
+  if (!raw) raw = localStorage.getItem(k);
   try { const d = raw ? JSON.parse(raw) : null; if (d && typeof d === "object") return d; } catch (e) {}
   return dflt;
 }
 const timers = {};
 function save(key, obj) {
-  clearTimeout(timers[key]);
-  timers[key] = setTimeout(async () => {
+  const k = skey(key);
+  clearTimeout(timers[k]);
+  timers[k] = setTimeout(async () => {
     const raw = JSON.stringify(obj);
-    try { localStorage.setItem(key, raw); } catch (e) {}
-    if (csOK()) await csSet(key, raw);
+    try { localStorage.setItem(k, raw); } catch (e) {}
+    if (csOK()) await csSet(k, raw);
   }, 350);
 }
 
