@@ -496,6 +496,46 @@ async def handle_verify(session, chat_id, from_id, text: str):
 
 
 # ---------------------------------------------------------------- commands
+WELCOME_TERMS = (
+    "\U0001F381 <b>Gift Rent</b> — маркетплейс аренды подарков Telegram\n"
+    "Основатель: Достонхожа (@dostonxoja)\n\n"
+    "Что здесь можно:\n"
+    "• <b>Маркет</b> — арендуй подарки у других юзеров\n"
+    "• <b>Сдать подарок</b> — размести свой подарок и зарабатывай\n\n"
+    "\u26A0\uFE0F <b>Условия использования:</b>\n"
+    "• Оплата происходит напрямую между юзерами (P2P)\n"
+    "• Переводи деньги только после согласования сделки в чате с арендодателем\n"
+    "• Витрины проверяются цифровой подписью, мошенники попадают в блок-лист\n"
+    "• Жалоба: /block — админ разберётся\n\n"
+    "Нажми «Принимаю условия», чтобы пользоваться сервисом.\n"
+    "Твой ID: <code>{from_user_id}</code>")
+
+
+async def handle_agree(session, cb):
+    """Кнопка «Принимаю условия»: фиксируем согласие юзера в users.json."""
+    try:
+        frm = cb.get("from") or {}
+        uid = frm.get("id")
+        await tg_call(session, "answerCallbackQuery", {"callback_query_id": cb["id"], "text": "Спасибо! Условия приняты ✅"})
+        if uid and repo.enabled:
+            users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
+            lst = users.setdefault("users", [])
+            for u in lst:
+                if u.get("id") == uid:
+                    u["agreed"] = int(time.time())
+                    break
+            else:
+                lst.append({"id": uid, "username": frm.get("username", ""), "first": frm.get("first_name", ""),
+                            "ts": int(time.time()), "agreed": int(time.time())})
+            await repo.commit_files(session, {
+                "data/users.json": json.dumps(users, ensure_ascii=False, indent=1).encode()},
+                f"bot: согласие с условиями {uid}")
+        await send_text(session, cb["message"]["chat"]["id"],
+                        "Условия приняты ✅\nПользуйся кнопками снизу: «Маркет» и «Сдать подарок». Удачных сделок!")
+    except Exception:
+        log.exception("agree упал")
+
+
 async def handle_start(session, chat_id, from_user, args=""):
     if args.startswith("rp_"):
         # жалоба: rp_<uid>_<hash>
@@ -518,7 +558,9 @@ async def handle_start(session, chat_id, from_user, args=""):
     # uid зашит в URL кнопок: мини-апп знает юзера, даже если Telegram не передал initData
     # cb-бакет по часам: Telegram кэширует HTML мини-аппа, бакет заставляет брать свежий не реже раза в час
     app_url = f"{base_url}?u={from_user['id']}&cb={int(time.time() // 3600)}" if base_url else ""
-    markup = {"inline_keyboard": [[{"text": "Открыть маркетплейс", "web_app": {"url": app_url}}]]} if app_url else None
+    markup = {"inline_keyboard": [
+        [{"text": "Открыть маркетплейс", "web_app": {"url": app_url}}],
+        [{"text": "✅ Принимаю условия", "callback_data": "agree"}]]} if app_url else None
     if app_url:
         # reply-клавиатура: только из неё мини-апп может вызвать sendData (заказы и публикация без копирования)
         await tg_call(session, "sendMessage", {
@@ -540,9 +582,7 @@ async def handle_start(session, chat_id, from_user, args=""):
         register()
         return
     await send_text(session, chat_id,
-        "<b>Gift Rent</b>: маркетплейс аренды NFT-подарков.\n\n"
-        "Арендуй подарки или сдавай свои. Всё внутри мини-аппа, заявки приходят сюда.\n"
-        f"Твой ID: <code>{from_user['id']}</code>",
+        WELCOME_TERMS.replace("{from_user_id}", str(from_user["id"])),
         markup)
 
     register = lambda: asyncio.create_task(ensure_registered(session, from_user))
@@ -626,6 +666,10 @@ async def handle_complaints(session, chat_id, from_id):
 
 # ---------------------------------------------------------------- dispatch
 async def process_update(session, upd):
+    cb = upd.get("callback_query")
+    if cb:
+        await handle_agree(session, cb)
+        return
     msg = upd.get("message") or upd.get("channel_post")
     if not msg:
         return

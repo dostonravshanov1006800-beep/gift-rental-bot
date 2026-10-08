@@ -388,3 +388,13 @@ select.inp { appearance: none; -webkit-appearance: none; }
 .dchip.nft { border-color: rgba(247, 199, 104, .38); }
 .dchip.nft b { color: #f7c768; }
 .dchip.reg b { color: var(--muted); }
+
+/* ---- инфо-баннер и «О сервисе» ---- */
+.infobanner{margin:0 0 12px;padding:12px 14px;border:1px solid var(--line);border-radius:14px;background:var(--bg-card);display:flex;flex-direction:column;gap:6px}
+.ib-row{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.ib-name{font-weight:700;font-size:15px}
+.ib-found{font-size:12px;opacity:.6}
+.ib-text{font-size:13px;opacity:.75;line-height:1.45}
+.about{padding:2px 2px 8px;display:flex;flex-direction:column;gap:14px}
+.ab-block{font-size:13.5px;line-height:1.55;opacity:.85}
+.ab-block b{display:block;font-size:12.5px;opacity:.6;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px}

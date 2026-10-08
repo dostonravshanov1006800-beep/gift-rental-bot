@@ -267,12 +267,18 @@ function renderMarket() {
   $("#topbar").innerHTML = `<div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="q" type="search" placeholder="Поиск подарков и арендодателей" value="${esc(S.q)}"></div>`;
   const curs = ["all", ...CURRENCIES];
   $("#view").innerHTML = `
+    <div class="infobanner" id="ib">
+      <div class="ib-row"><span class="ib-name">\u{1F381} Gift Rent</span><span class="ib-found">основатель @dostonxoja</span></div>
+      <div class="ib-text">Маркетплейс аренды подарков Telegram. Подключи профиль — подарки подхватятся автоматически.</div>
+      <button class="btn out sm" id="ibmore">О сервисе и условиях</button>
+    </div>
     <div class="chips">
       ${curs.map((c) => `<button class="chip ${S.cur === c ? "on" : ""}" data-cur="${c}">${c === "all" ? "Все" : c}</button>`).join("")}
       <button class="chip ${S.sort === "asc" ? "on" : ""}" data-sort="asc">Дешевле</button>
       <button class="chip ${S.sort === "desc" ? "on" : ""}" data-sort="desc">Дороже</button>
     </div>
     <div id="grid"></div>`;
+  $("#ibmore").onclick = openAbout;
   $("#q").addEventListener("input", (e) => { S.q = e.target.value; drawGrid(); });
   $$("[data-cur]").forEach((b) => b.addEventListener("click", () => { S.cur = b.dataset.cur; renderMarket(); }));
   $$("[data-sort]").forEach((b) => b.addEventListener("click", () => { S.sort = S.sort === b.dataset.sort ? "new" : b.dataset.sort; renderMarket(); }));
@@ -419,7 +425,8 @@ function renderProfile() {
     <div class="section-title">Сдать подарок в аренду</div>
     <div class="scanstate" id="scanstate"></div>
     <div id="mine"></div>
-    <div class="hint">Включи переключатель, укажи цену и срок. Бот сверит подарки с твоим профилем, публикация мгновенная.</div>`;
+    <div class="hint">Включи переключатель, укажи цену и срок. Бот сверит подарки с твоим профилем, публикация мгновенная.</div>
+    <button class="btn sec sm" id="about" style="margin:14px auto;display:block">О сервисе и условиях</button>`;
   $("#cid").onclick = async () => {
     if (S.uid === "0") { const ok = await applyTgUser(); if (!ok) { toast("Открываю бота для входа…"); setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}?start=login`), 400); } return; }
     await copy(S.uid); haptic("ok"); toast("ID скопирован");
@@ -427,6 +434,7 @@ function renderProfile() {
   startLiveScan();
   $("#edit").onclick = openEdit;
   $("#share").onclick = shareShowcase;
+  $("#about").onclick = openAbout;
   drawReq(); drawMine();
 }
 
@@ -703,6 +711,32 @@ async function publish(force) {
   setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}?start=pub`), 1100);
 }
 
+const ABOUT_TEXT = `
+  <div class="sheet-h"><span>\u{1F381} Gift Rent</span><button class="sheet-x" id="x">\u00d7</button></div>
+  <div class="about">
+    <div class="ab-block"><b>О сервисе</b>
+      Gift Rent — маркетплейс аренды подарков Telegram. Арендуй подарки у других юзеров или зарабатывай, сдавая свои. Основатель: <b>Достонхожа</b> (@dostonxoja). Профиль сканируется автоматически, публикация занимает секунды, всё работает 24/7.</div>
+    <div class="ab-block"><b>Условия использования</b>
+      1. Оплата напрямую между юзерами (P2P) — сервис переводов не проводит.<br>
+      2. Переводи деньги только после согласования сделки в чате с арендодателем.<br>
+      3. Витрины проверяются цифровой подписью; мошенники попадают в блок-лист.<br>
+      4. Все сделки фиксируются: заказ, подтверждение арендодателем, отметка «сдано».<br>
+      5. Жалоба на мошенника — команда /block у бота, админ разберётся.</div>
+  </div>`;
+function agreed() { try { return !!localStorage.getItem("gr_agree_" + S.uid); } catch (e) { return false; } }
+function openAbout() {
+  $("#sheet").innerHTML = ABOUT_TEXT + (agreed()
+    ? `<div class="sheet-f"><button class="btn sec" id="abclose">Закрыть</button></div>`
+    : `<div class="sheet-f"><button class="btn" id="agreebtn">\u2705 Принимаю условия</button></div>`);
+  $("#overlay").hidden = false;
+  $("#x").onclick = () => ($("#overlay").hidden = true);
+  const c = $("#abclose"); if (c) c.onclick = () => ($("#overlay").hidden = true);
+  const ab = $("#agreebtn"); if (ab) ab.onclick = () => {
+    try { localStorage.setItem("gr_agree_" + S.uid, String(Date.now())); } catch (e) {}
+    haptic("ok"); toast("Спасибо! Условия приняты");
+    $("#overlay").hidden = true;
+  };
+}
 async function shareShowcase() {
   const l = (S.catalog || []).filter((g) => g.owner && String(g.owner.uid) === S.uid);
   if (!l.length) return toast("Сначала опубликуй подарки в каталог");
@@ -863,6 +897,8 @@ async function init() {
   }
   // и дальше проверяем в фоне (если вебвью отдаст initData позже)
   setInterval(() => { if (S.uid === "0") applyTgUser(); }, 1500);
+  // новый юзер: один раз показываем условия, пока он не примет их
+  setTimeout(() => { if (S.uid !== "0" && !agreed()) openAbout(); }, 2500);
   $$(".tab").forEach((b) => b.addEventListener("click", () => { S.viewShowcase = null; S._userTab = b.dataset.tab; setTab(b.dataset.tab); }));
   $("#gadd").onclick = openAddRent;
   $("#pub").onclick = () => publish();
