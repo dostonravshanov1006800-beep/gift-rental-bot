@@ -1,0 +1,5 @@
+# данные пишутся ботом через Actions, ничего секретного здесь быть не может
+data/complaints.json
+.DS_Store
+__pycache__/
+*.pyc

@@ -1,0 +1,52 @@
+name: bot
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # keep-alive: поднимает бота, если прошлый ран умер
+  workflow_dispatch: {}      # ручной запуск для дебага
+
+concurrency:
+  group: bot
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # бот коммитит данные в репозиторий
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Guard (не стартовать, если уже работает)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        id: guard
+        run: |
+          RUNS=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?status=in_progress&per_page=100" \
+            | jq '[.workflow_runs[] | select(.name=="bot" and .id!="${{ github.run_id }}")] | length')
+          if [ "$RUNS" = "0" ]; then SKIP=false; else SKIP=true; fi
+          echo "skip=$SKIP" >> $GITHUB_OUTPUT
+          echo "уже работает: $SKIP"
+
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.skip == 'false'
+
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip == 'false'
+        with:
+          python-version: '3.12'
+
+      - name: Установка зависимостей
+        if: steps.guard.outputs.skip == 'false'
+        run: pip install -r bot/requirements.txt
+
+      - name: Запуск бота
+        if: steps.guard.outputs.skip == 'false'
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          ADMIN_IDS: ${{ secrets.ADMIN_IDS }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          APP_SHORT_NAME: ${{ vars.APP_SHORT_NAME || 'gifts' }}
+        run: python bot/main.py
