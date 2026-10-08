@@ -14,7 +14,22 @@
    "client_first": "Wander",
    "ts": 1791475621,
    "status": "new"
+  },
+  {
+   "id": "2",
+   "gid": "5170145012310081615",
+   "name": "💝",
+   "num": null,
+   "price": "3000",
+   "cur": "UZS",
+   "per": "день",
+   "comment": "1",
+   "client_uid": 6097472949,
+   "client_username": "limitbank",
+   "client_first": "#",
+   "ts": 1791476005,
+   "status": "new"
   }
  ],
- "seq": 1
+ "seq": 2
 }
