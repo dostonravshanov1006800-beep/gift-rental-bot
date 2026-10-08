@@ -165,6 +165,22 @@ async def build_user_files(session, uid) -> dict:
 
 KNOWN_THUMBS: set = set()
 _last_touch: dict[int, float] = {}
+_KB_SENT: set = set()
+
+
+async def ensure_keyboard(session, chat_id, from_user):
+    """Reply-клавиатура с web_app: единственный режим, где мини-апп может вызвать sendData (мгновенная публикация/заказ)."""
+    uid = from_user.get("id")
+    if not uid or uid in _KB_SENT or not REPO_NAME:
+        return
+    _KB_SENT.add(uid)
+    base = f"https://{REPO_NAME.split('/')[0]}.github.io/{REPO_NAME.split('/')[-1]}/"
+    url = f"{base}?u={uid}"
+    await tg_call(session, "sendMessage", {
+        "chat_id": chat_id, "text": "Кнопки внизу: «Маркет» и «Сдать подарок». Публикация и заказы через них мгновенные.",
+        "reply_markup": {"keyboard": [[{"text": "Маркет", "web_app": {"url": url}},
+                                        {"text": "Сдать подарок", "web_app": {"url": url + "&m=pub"}}]],
+                         "resize_keyboard": True, "is_persistent": True}})
 LAST_SEEN: dict[int, float] = {}
 
 
@@ -191,15 +207,27 @@ async def maybe_touch_user(session, uid):
         log.exception("touch %s упал", uid)
 
 
+_USERS_CACHE: dict = {"ts": 0.0, "users": []}
+
+
+async def get_users_cached(session, max_age=20):
+    """Список юзеров из памяти; GitHub API дёргаем раз в max_age с, а не на каждый тик скана."""
+    now = time.time()
+    if now - _USERS_CACHE["ts"] > max_age or not _USERS_CACHE["users"]:
+        users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
+        _USERS_CACHE["users"] = users.get("users", [])
+        _USERS_CACHE["ts"] = now
+    return _USERS_CACHE["users"]
+
+
 async def refresh_all_users(session, hot_only=False):
-    """Подарки юзеров параллельно, один коммит при изменениях.
-    Горячие (писали боту за 15 мин) сканируются каждый тик, холодные — каждый 4-й."""
+    """Подарки юзеров параллельно, один коммит при изменениях (md5-skip).
+    Горячие (активны за 15 мин) сканируются каждый тик, остальные — реже."""
     if not repo.enabled:
         return
-    users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
     now = time.time()
     targets = []
-    for u in users.get("users", []):
+    for u in await get_users_cached(session):
         hot = now - LAST_SEEN.get(u["id"], 0) < 900
         if hot or not hot_only:
             targets.append(u)
@@ -532,10 +560,17 @@ async def handle_start(session, chat_id, from_user, args=""):
     asyncio.create_task(_register())
 
 
+def _cache_user(from_user):
+    if from_user and "id" in from_user and not any(u["id"] == from_user["id"] for u in _USERS_CACHE["users"]):
+        _USERS_CACHE["users"].append({"id": from_user["id"], "username": from_user.get("username", ""),
+                                      "first": from_user.get("first_name", ""), "ts": int(time.time())})
+
+
 async def ensure_registered(session, from_user):
     """Любое сообщение от юзера -> он в users.json (каталог его увидит)."""
     if not from_user or "id" not in from_user or not repo.enabled:
         return
+    _cache_user(from_user)
     try:
         users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
         if any(u["id"] == from_user["id"] for u in users.get("users", [])):
@@ -615,6 +650,8 @@ async def process_update(session, upd):
         LAST_SEEN[uid] = time.time()
         asyncio.create_task(ensure_registered(session, from_user))
         asyncio.create_task(maybe_touch_user(session, uid))
+        if not text.startswith("/start"):
+            asyncio.create_task(ensure_keyboard(session, chat_id, from_user))
     if text.startswith("/start"):
         args = text.split(maxsplit=1)[1] if len(text.split()) > 1 else ""
         await handle_start(session, chat_id, from_user, args.strip())
@@ -677,7 +714,7 @@ async def main():
         app_url = f"https://{REPO_NAME.split('/')[0]}.github.io/{REPO_NAME.split('/')[-1]}/" if REPO_NAME else ""
         if app_url:
             await tg_call(session, "setChatMenuButton", {"menu_button": {
-                "type": "web_app", "text": "Аренда", "web_app": {"url": app_url}}})
+                "type": "web_app", "text": "Аренда", "web_app": {"url": app_url + "?src=menu"}}})
         await tg_call(session, "setMyCommands", {"commands": [
             {"command": "start", "description": "Открыть маркетплейс"},
             {"command": "orders", "description": "Мои входящие заказы"},
@@ -708,15 +745,15 @@ async def main():
             tick = 0
             while True:
                 try:
-                    # горячие (юзер в мини-аппе / писал недавно): каждые 12с
-                    await refresh_all_users(session, hot_only=True)
-                    # холодные: каждый 4-й тик (~48с)
-                    if tick % 4 == 0:
-                        await refresh_all_users(session, hot_only=False)
+                    # горячие (писали недавно): каждые 2с, все остальные: каждые 10с
+                    if tick % 5 == 0:
+                        await refresh_all_users(session, hot_only=False)   # все: каждые ~10с
+                    else:
+                        await refresh_all_users(session, hot_only=True)    # активные: каждые ~2с
                 except Exception:
                     log.exception("refresh упал")
                 tick += 1
-                await asyncio.sleep(12)
+                await asyncio.sleep(2)
 
         await asyncio.gather(poll(), refresher())
 

@@ -189,6 +189,7 @@ async function loadOrders() {
  * shell: tabs
  * ============================================================ */
 const _pubMode = new URLSearchParams(location.search).get("m") === "pub";
+const _fromMenu = new URLSearchParams(location.search).get("src") === "menu";
 
 function openAddRent() {
   if (S.uid === "0") { toast("Нужен вход через бота"); setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}?start=login`), 400); return; }
@@ -464,14 +465,19 @@ function drawMine() {
   if (S.uid === "0") { box.innerHTML = `<div class="empty"><b>Нужен вход через бота</b>Ты открыл мини-апп напрямую, Telegram не передал профиль. Нажми кнопку: бот пришлёт персональную кнопку входа, и всё подключится сразу и навсегда.<button class="btn" id="retryuid" style="margin:14px auto 0;max-width:260px">Войти через бота</button></div>`; const rb = $("#retryuid"); if (rb) rb.onclick = () => openTg(`https://t.me/${CONFIG.botUsername}?start=login`); return; }
   const list = mergeGifts();
   if (!list.length) {
-    const scanning = ((CONFIG.scanToken && !S.liveTs) || S.myGifts === "pending") && !S._scanGaveUp;
+    // скелетоны только пока НЕТ ни одного ответа: репо-скан основного бота уже ответил (даже пустым) или скан-бот отказал, значит ждать нечего
+    const repoAnswered = Array.isArray(S.myGifts);
+    const scanning = ((!S.liveTs && !S.liveFail && !repoAnswered) || S.myGifts === "pending") && !S._scanGaveUp;
     if (scanning) {
       box.innerHTML = Array.from({ length: 3 }, () => `<div class="lrow skl"><div class="lthumb sk-block"></div><div class="lmeta"><b class="sk-line w60"></b><span class="sk-line w40"></span></div></div>`).join("");
       // одноразовый таймер: если скан затянулся, показываем CTA (без циклов перерисовки)
       if (!S._scanTmr) S._scanTmr = setTimeout(() => { if (mergeGifts().length) return; if (S.myGifts === "pending" || (CONFIG.scanToken && !S.liveTs && !mergeGifts().length)) { S._scanTmr = 0; S._scanGaveUp = true; drawMine(); } }, 12000);
       return;
     }
-    box.innerHTML = `<div class="empty"><b>Подарки не найдены</b>Открой бота и нажми «Начать» — он мгновенно отсканирует твой профиль. Вернись сюда: подарки появятся в «Профиле», и их можно сдавать в аренду.<button class="btn" id="scancta" style="margin:14px auto 0;max-width:240px">Открыть бота и сканировать</button><span class="dim" style="margin-top:10px">Это нужно один раз, дальше профиль обновляется сам.</span></div>`;
+    const fresh = S.myGiftsUpd && (Date.now() / 1000 - S.myGiftsUpd) < 120;
+    box.innerHTML = fresh
+      ? `<div class="empty"><b>В профиле Telegram нет подарков</b>Бот проверил твой профиль только что: подарков нет. Получишь подарок, он появится здесь сам через пару секунд.<span class="hint">Скрыты подарки? Открой Telegram → Профиль → Подарки и сделай их видимыми.</span></div>`
+      : `<div class="empty"><b>Подарки не найдены</b>Нажми «Начать» в боте: он сразу отсканирует профиль, подарки появятся здесь сами.<button class="btn" id="scancta">Открыть бота и сканировать</button></div>`;
     const cta = $("#scancta");
     if (cta) cta.onclick = () => openTg(`https://t.me/${CONFIG.botUsername}?start=scan`);
     return;
@@ -561,25 +567,49 @@ function buildListing() {
   return { l: 1, uid: S.uid, name: S.profile.name || [u.first_name, u.last_name].filter(Boolean).join(" "), uname: S.profile.uname || u.username || "", about: S.profile.about, req: S.profile.req.filter((r) => r.v), gifts };
 }
 
+// Публикация. sendData у Telegram работает ТОЛЬКО при запуске с reply-клавиатуры бота; в остальных режимах
+// метод есть, но молча не доставляет. Поэтому: (1) оптимистично показываем листинг сразу, (2) отправляем,
+// (3) ждём подтверждения из каталога, (4) если не пришло — честный фолбэк, а не вечное «Публикую…».
+// sendData по докам Telegram работает только при запуске с keyboard button и ЗАКРЫВАЕТ мини-апп.
+// Надёжный признак доставки один: апп закрылся. Если через 1.6с он ещё жив, доставки не было.
+const _canSendData = () => !!(tg && typeof tg.sendData === "function");
+function myCatalogKey() { return (S.catalog || []).filter((g) => g.owner && String(g.owner.uid) === S.uid).map((g) => g.g + ":" + g.p + g.cur + g.per).sort().join("|"); }
+
 async function publish(force) {
   const obj = buildListing();
   const wasListed = (S.catalog || []).some((g) => g.owner && String(g.owner.uid) === S.uid);
   if (!obj.gifts.length && !wasListed && !force) return toast("Включи хотя бы один подарок");
   const raw = JSON.stringify(obj);
   const btn = $("#pub");
-  // sendData уходит боту мгновенно, если вход разрешает (reply-клавиатура); иначе фолбэк ниже
-  try {
-    if (tg && tg.sendData) {
-      btn && btn.classList.add("busy"); haptic("ok"); toast("Публикую…");
-      tg.sendData(raw);
-      return;
-    }
-  } catch (e) { /* sendData не разрешён этим входом — копируем */ }
+  const want = obj.gifts.map((g) => g.g + ":" + g.p + g.cur + g.per).sort().join("|");
+
+  // оптимистично: у арендодателя каталог обновляется мгновенно, без ожидания бота
+  const me = { uid: S.uid, name: obj.name, uname: obj.uname };
+  const known = mergeGifts();
+  S.catalog = (S.catalog || []).filter((c) => !(c.owner && String(c.owner.uid) === S.uid)).concat(obj.gifts.map((g) => {
+    const k = known.find((x) => x.gid === g.g) || {};
+    return { g: g.g, n: k.name || "", m: k.model || "", s: k.symbol || "", num: k.num, cc: k.cc, ec: k.ec, mr: k.mr, sr: k.sr, br: k.br,
+      b: k.backdrop || "", t: k.th_fuid ? `assets/gifts/${k.th_fuid}.webp` : "", p: g.p, cur: g.cur, per: g.per, ts: Math.floor(Date.now() / 1000), owner: me, _local: 1 };
+  }));
+  S._pubWant = want; S._pubAt = Date.now();
+  if (btn) btn.classList.add("busy");
+  haptic("ok"); toast("Публикую…");
+  if (S.tab === "profile") drawMine();
+
+  let tried = false;
+  try { if (_canSendData()) { tg.sendData(raw); tried = true; } } catch (e) {}
+  if (tried) {
+    // если Telegram принял sendData, мини-апп закроется; живой апп через 1.6с = доставки не было
+    await new Promise((r) => setTimeout(r, 1600));
+    if (document.hidden) return;
+  }
+  // sendData не доставил (запуск не с keyboard button): рабочий путь без ожидания в пустоту
+  if (btn) btn.classList.remove("busy");
   const payload = b64e(raw);
   if (payload.length > 3900) return toast("Слишком много подарков за раз: выключи часть");
   if (!(await copy(payload))) return toast("Не удалось скопировать");
-  haptic("ok"); toast("Скопировано. Вставь в чат бота и отправь.");
-  setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}`), 600);
+  toast("Скопировано. Откроется бот: вставь и отправь");
+  setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}`), 700);
 }
 
 async function shareShowcase() {
