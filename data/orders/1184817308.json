@@ -1,0 +1,21 @@
+{
+ "orders": [
+  {
+   "id": "1",
+   "coid": "dl-6999767433-P3ltj4crnuwN-497645",
+   "gid": "MoodPack-64155#i1",
+   "name": "Mood Pack",
+   "num": 64155,
+   "price": "6000",
+   "cur": "UZS",
+   "per": "день",
+   "comment": "",
+   "client_uid": 6999767433,
+   "client_username": "wanderfalcon",
+   "client_first": "🏦",
+   "ts": 1791524472,
+   "status": "new"
+  }
+ ],
+ "seq": 1
+}
