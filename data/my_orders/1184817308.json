@@ -1,0 +1,17 @@
+{
+ "orders": [
+  {
+   "id": "1",
+   "coid": "dl-1184817308-yX7PVqtsrHuj-497645",
+   "lu": "1937636440",
+   "name": "Signet Ring",
+   "num": 9186,
+   "price": "6000",
+   "cur": "UZS",
+   "per": "день",
+   "ts": 1791523289,
+   "status": "new",
+   "owner_username": "K_BB6"
+  }
+ ]
+}
