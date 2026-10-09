@@ -18,8 +18,10 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timezone
 import html
 import re
+from urllib.parse import quote
 
 import aiohttp
 
@@ -196,6 +198,47 @@ async def fetch_user_gifts(session, user_id) -> list[dict]:
     except Exception as e:
         raise GiftsFetchError(f"{user_id}: {e!r}")
 
+
+async def fetch_giftmeta(session) -> dict | None:
+    """api.changes.tg (открытый API @GiftChanges, без ключей): рыночные цены аукционов Telegram.
+    Ошибка -> None: data/giftmeta.json не трогаем (старые данные лучше, чем никаких)."""
+    try:
+        async with session.get("https://api.changes.tg/auctions",
+                               timeout=aiohttp.ClientTimeout(total=25)) as r:
+            aucs = await r.json(content_type=None)
+        mkt = {}
+        for a in aucs or []:
+            name = (a.get("name") or "").strip()
+            if not name:
+                continue
+            mkt[name.lower()] = {"avg": a.get("averagePrice"), "n": a.get("totalGifts"),
+                                 "fin": bool(a.get("finished"))}
+        for a in aucs or []:
+            name = (a.get("name") or "").strip()
+            if not name:
+                continue
+            try:
+                async with session.get(f"https://api.changes.tg/auction/{quote(name)}/rounds",
+                                       timeout=aiohttp.ClientTimeout(total=25)) as r:
+                    rd = await r.json(content_type=None)
+                rounds = rd.get("rounds") if isinstance(rd, dict) else None
+                last = (rounds or [])[-1] if rounds else None
+                if last and last.get("clearingPrice"):
+                    ts = None
+                    try:
+                        ts = int(datetime.fromisoformat(
+                            last["endedAt"].replace("Z", "+00:00")).timestamp()) if last.get("endedAt") else None
+                    except Exception:
+                        pass
+                    mkt[name.lower()].update({"p": last.get("clearingPrice"), "t": ts})
+            except Exception:
+                continue
+        if not mkt:
+            return None
+        return {"updated": int(time.time()), "mkt": mkt}
+    except Exception as e:
+        log.warning("giftmeta: пропускаем, %s", repr(e)[:140])
+        return None
 
 async def download_thumb(session, file_id) -> bytes | None:
     data = await tg_call(session, "getFile", {"file_id": file_id})
@@ -1027,7 +1070,12 @@ async def main():
 
         async def refresher():
             await asyncio.sleep(10)  # прогрев после старта
-            last_hb, last_hot, last_all = 0.0, 0.0, 0.0
+            last_hb, last_hot, last_all, last_meta = 0.0, 0.0, 0.0, 0.0
+            meta_snap = None  # снимок giftmeta: коммитим только при изменении
+            try:
+                meta_snap = await repo.get_json(session, "data/giftmeta.json", None)
+            except Exception:
+                pass
             while True:
                 try:
                     # watchdog: getUpdates молчит > 5 минут -> бот «живой, но глухой».
@@ -1047,6 +1095,15 @@ async def main():
                     if time.time() - last_all > 600:
                         last_all = time.time()
                         await refresh_all_users(session, hot_only=False)
+                    # рыночные цены аукционов (api.changes.tg): раз в 6ч, коммит только при изменении
+                    if time.time() - last_meta > 6 * 3600 and repo.enabled:
+                        last_meta = time.time()
+                        meta = await fetch_giftmeta(session)
+                        if meta and json.dumps(meta, sort_keys=True) != (json.dumps(meta_snap, sort_keys=True) if meta_snap else None):
+                            meta_snap = meta
+                            asyncio.create_task(repo.commit_files(session, {
+                                "data/giftmeta.json": json.dumps(meta, ensure_ascii=False, indent=1).encode()},
+                                "bot: giftmeta (аукционы @GiftChanges)"))
                 except Exception:
                     log.exception("refresh упал")
                 await asyncio.sleep(2)

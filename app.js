@@ -176,6 +176,7 @@ async function loadCatalog() { const d = await getJSON("data/catalog.json");
 async function loadMine() {
   if (S.uid === "0") { S.myGifts = []; return; }
   getJSON("data/heartbeat.json").then((hb) => { if (hb && hb !== "404" && hb.ts) { S.hb = hb.ts; drawScanState(); } });
+  getJSON("data/giftmeta.json").then((m) => { if (m && m !== "404" && m.mkt) S.giftMeta = m.mkt; });
   const d = await getJSON(`data/gifts/${S.uid}.json`);
   if (d === null) { if (!Array.isArray(S.myGifts) && S.myGifts !== "pending") S.myGifts = "pending"; return; }  // сбой сети: не трогаем
   S.myGifts = d === "404" ? "pending" : d ? d.gifts || [] : [];
@@ -231,7 +232,7 @@ const I18N = {
     h_edit:"Редактировать профиль", st_cta:"Частые вопросы (FAQ)",
     f_price:"Цена", f_comment:"Комментарий (срок, вопросы)", f_ph:"Например: на 3 дня", f_owner:"Арендодатель", f_mine:"Это твой подарок.",
     f_negotiable:"Цена по договорённости", f_stars:"в профиле", f_type:"Тип", f_nft:"Уникальный NFT", f_reg:"Обычный подарок",
-    f_model:"Модель", f_sym:"Символ", f_back:"Фон", f_stars:"Звёзды",
+    f_model:"Модель", f_sym:"Символ", f_back:"Фон", f_stars:"Звёзды", f_mkt:"Рыночная цена (аукцион)",
     t_login:"Нужен вход через бота", t_openlogin:"Открываю бота для входа…", t_copied:"Скопировано",
     t_idcopied:"ID скопирован", t_saved:"Сохранено", t_ordersend:"Заказ отправляется…", t_ordcopy:"Заказ скопирован. Вставь его в чат бота и отправь.",
     t_ordcopyfail:"Не удалось скопировать заказ. Попробуй ещё раз.", t_ordeep:"Откроется бот: нажми кнопку «Маркет» внизу — заказ дойдёт сам.",
@@ -280,7 +281,7 @@ const I18N = {
     h_edit:"Edit profile", st_cta:"FAQ",
     f_price:"Price", f_comment:"Comment (dates, questions)", f_ph:"E.g.: for 3 days", f_owner:"Owner", f_mine:"This is your own gift.",
     f_negotiable:"Price by agreement", f_stars:"in profile", f_type:"Type", f_nft:"Unique NFT", f_reg:"Regular gift",
-    f_model:"Model", f_sym:"Symbol", f_back:"Backdrop", f_stars:"Stars",
+    f_model:"Model", f_sym:"Symbol", f_back:"Backdrop", f_stars:"Stars", f_mkt:"Market price (auction)",
     t_login:"Sign in via the bot", t_openlogin:"Opening the bot…", t_copied:"Copied",
     t_idcopied:"ID copied", t_saved:"Saved", t_ordersend:"Sending your order…", t_ordcopy:"Order copied. Paste it in the bot chat and send.",
     t_ordcopyfail:"Could not copy the order. Try again.", t_ordeep:"The bot will open: tap «Rent» at the bottom — the order will arrive itself.",
@@ -328,7 +329,7 @@ const I18N = {
     h_edit:"Profilni tahrirlash", st_cta:"Ko'p so'raladigan savollar",
     f_price:"Narx", f_comment:"Izoh (muddat, savollar)", f_ph:"Masalan: 3 kunga", f_owner:"Ijara beruvchi", f_mine:"Bu sizning sovg'angiz.",
     f_negotiable:"Narx kelishuv bo'yicha", f_stars:"profilda", f_type:"Turi", f_nft:"Nodavviy NFT", f_reg:"Oddiy sovg'a",
-    f_model:"Model", f_sym:"Belgi", f_back:"Fon", f_stars:"Yulduzlar",
+    f_model:"Model", f_sym:"Belgi", f_back:"Fon", f_stars:"Yulduzlar", f_mkt:"Bozor narxi (auksion)",
     t_login:"Bot orqali kirish kerak", t_openlogin:"Bot ochilmoqda…", t_copied:"Nusxalandi",
     t_idcopied:"ID nusxalandi", t_saved:"Saqlandi", t_ordersend:"Buyurtma yuborilmoqda…", t_ordcopy:"Buyurtma nusxalandi. Bot chatiga qo'yib yuboring.",
     t_ordcopyfail:"Buyurtmani nusxalash imkonsiz. Yana urinib ko'ring.", t_ordeep:"Bot ochiladi: pastdagi «Ijara» tugmasini bosing — buyurtma o'zi yetib boradi.",
@@ -507,10 +508,12 @@ function openDetail(g) {
   // тип подарка: NFT — уникальный (модель/узор/фон/номер/ссылка), обычный — просто эмодзи со звёздами
   const typeChip = `<div class="dchip ${isNft ? "nft" : "reg"}"><span>${t("f_type")}</span><b>${isNft ? t("f_nft") : t("f_reg")}</b></div>`;
   const starsChip = !isNft && g.stars ? `<div class="dchip"><span>${t("f_stars")}</span><b>${esc(g.stars)} ★</b></div>` : "";
+  const mk = S.giftMeta && (S.giftMeta[(dname(g) || "").toLowerCase()] || null);
+  const mktChip = mk && (mk.p || mk.avg) ? `<div class="dchip"><span>${t("f_mkt")}</span><b>≈ ${esc(mk.p || mk.avg)} ★</b></div>` : "";
   $("#sheet").innerHTML = `
     <div class="sheet-h"><span>${esc(g.dn || dname(g))}${g.num != null ? " #" + esc(g.num) : ""}</span><button class="sheet-x" id="x">×</button></div>
     <div class="dcanvas" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : "🎁"}</div>
-    <div class="dchips">${typeChip}${starsChip}${rows.map((r) => `<div class="dchip"><span>${r[0]}</span><b>${esc(r[1])}</b>${r[2] ? `<i>${pct(r[2])}</i>` : ""}</div>`).join("")}</div>
+    <div class="dchips">${typeChip}${starsChip}${mktChip}${rows.map((r) => `<div class="dchip"><span>${r[0]}</span><b>${esc(r[1])}</b>${r[2] ? `<i>${pct(r[2])}</i>` : ""}</div>`).join("")}</div>
     <div class="dprice">${g.p ? `${esc(money(g.p))} ${esc(g.cur || "")} <small>/ ${esc(g.per || "")}</small>` : g.stars ? `${esc(g.stars)} <small>★ ${t("f_stars_p")}</small>` : `<small>${t("f_negotiable")}</small>`}</div>
     <div class="owner"><div class="oav">${esc((o.name || o.uname || "?").slice(0, 1).toUpperCase())}</div><div><b>${esc(o.name || t("f_owner"))}</b><span>${o.uname ? "@" + esc(o.uname) : "ID " + esc(o.uid)}</span></div></div>
     ${mine ? `<div class="hint" style="margin:0 0 10px">${t("f_mine")}</div>` : `
@@ -1050,6 +1053,8 @@ const FAQ = {
      "The service takes no money and transfers no gifts: it's P2P. Payment, deposit and return are agreed directly between owner and client using the details from the profile. Verify the person and never hand over a gift without a deposit."],
     ["Where to write if nothing helps?",
      "The service founder: @dostonxoja. Attach your Telegram ID from the profile and describe what happened."],
+    ["Where do market gift prices come from?",
+     "Telegram auction prices (last star sale round) are open data from @GiftChanges, api.changes.tg. Thanks to the authors for the free API."],
   ],
   uz: [
     ["Sovg'a chiqarish qancha vaqt oladi?",
@@ -1077,6 +1082,8 @@ const FAQ = {
      "Xizmat pul qabul qilmaydi va sovg'a uzatmaydi: bu P2P. To'lov, garov va qaytarish ijara beruvchi bilan mijoz o'rtasida profil ma'lumotlari bo'yicha to'g'ridan-to'g'ri kelishiladi. Mijozni tekshiring va garovsiz sovg'a bermang."],
     ["Hech narsa yordam bermasa qayerga yozish kerak?",
      "Xizmat asoschisi: @dostonxoja. Profilingizdagi Telegram ID ni qo'shib, nima bo'lganini yozib qoldiring."],
+    ["Sovg'alarning bozor narxi qayerdan olinadi?",
+     "Telegram auksion narxlari (yulduzlar uchun oxirgi savdo raundi) — @GiftChanges, api.changes.tg ochiq ma'lumotlari. Bepul API uchun mualliflarga rahmat."],
   ]
 };
 
@@ -1107,6 +1114,8 @@ const FAQ_ITEMS = [
    "Сервис не принимает деньги и не передаёт подарки: это P2P. Оплата, залог и возврат обсуждаются напрямую между арендодателем и клиентом по реквизитам из профиля. Проверяй собеседника и не отдавай подарок без залога."],
   ["Куда писать, если ничего не помогло?",
    "Основатель сервиса: @dostonxoja. Приложи свой Telegram ID из профиля и опиши, что произошло."],
+  ["Откуда рыночная цена подарков?",
+   "Цены аукционов Telegram (последний раунд продаж за звёзды) — открытые данные @GiftChanges, api.changes.tg. Спасибо авторам за бесплатный API."],
 ];
 function faqItems() { return I18N[S.lang] && S.lang !== "ru" ? FAQ[S.lang] : FAQ_ITEMS; }
 function faqHtml() {
@@ -1276,7 +1285,9 @@ function autoPollMine() {
       }
     }
     if (Date.now() - _hbAt > 60000) { _hbAt = Date.now();   // heartbeat достаточно раз в минуту
-      getJSON("data/heartbeat.json").then((hb) => { if (hb && hb !== "404" && hb.ts) { S.hb = hb.ts; drawScanState(); } }); }
+      getJSON("data/heartbeat.json").then((hb) => { if (hb && hb !== "404" && hb.ts) { S.hb = hb.ts; drawScanState(); } });
+      if (Date.now() - (_metaAt || 0) > 600000) { _metaAt = Date.now();   // рыночные цены: раз в 10 мин
+        getJSON("data/giftmeta.json").then((m) => { if (m && m !== "404" && m.mkt) S.giftMeta = m.mkt; }); } }
     if (S.uid === "0") return true;
     const d = await getJSON(`data/gifts/${S.uid}.json`);
     if (d === null) return true;   // сбой: прошлые подарки не трогаем
