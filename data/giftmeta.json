@@ -1,0 +1,31 @@
+{
+ "updated": 1791523319,
+ "mkt": {
+  "trojan horse": {
+   "avg": 6383,
+   "n": 10000,
+   "fin": true,
+   "p": 5316,
+   "t": 1767227619
+  },
+  "ufc strike": {
+   "avg": 3760,
+   "n": 60000,
+   "fin": true,
+   "p": 2896,
+   "t": 1765145706
+  },
+  "khabib's papakha": {
+   "avg": 10100,
+   "n": 29000,
+   "fin": true,
+   "p": 10300,
+   "t": 1763921100
+  },
+  "telegram pin": {
+   "avg": 335782,
+   "n": 1000,
+   "fin": true
+  }
+ }
+}
