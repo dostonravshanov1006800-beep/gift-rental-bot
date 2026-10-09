@@ -8,6 +8,10 @@ import aiohttp
 log = logging.getLogger("repo")
 
 
+class RepoError(Exception):
+    """GitHub API недоступен (лимит/сбой/сеть): данные читателя НЕ меняем и НЕ перезаписываем."""
+
+
 class Repo:
     def __init__(self, token: str | None, repo: str | None):
         self.token = token
@@ -27,11 +31,22 @@ class Repo:
         }
 
     async def _get(self, session, url, params=None):
-        async with self._sem:
-            async with session.get(url, headers=self._headers(), params=params) as r:
-                if r.status == 200:
-                    return await r.json()
-                return None
+        """200 -> данные, 404 -> None (файла нет), всё остальное -> RepoError.
+        Раньше любая ошибка превращалась в None, и get_json возвращал default:
+        бот «не видел» users.json и ЗАТИРАЛ его одним юзером."""
+        try:
+            async with self._sem:
+                async with session.get(url, headers=self._headers(), params=params) as r:
+                    if r.status == 200:
+                        return await r.json()
+                    if r.status == 404:
+                        return None
+                    body = (await r.text())[:120]
+                    raise RepoError(f"GET {url.rsplit('/', 2)[-2:]}: {r.status} {body}")
+        except RepoError:
+            raise
+        except Exception as e:
+            raise RepoError(f"GET {url.rsplit('/', 1)[-1]}: {e!r}")
 
     async def get_json(self, session, path, default=None):
         d = await self._get(session, f"{self.api}/repos/{self.repo}/contents/{path}?ref=main")
@@ -53,6 +68,35 @@ class Repo:
                 if r.status == 200:
                     return await r.read()
         return None
+
+    _json_locks: dict = {}
+
+    def _jlock(self, path):
+        if path not in self._json_locks:
+            self._json_locks[path] = asyncio.Lock()
+        return self._json_locks[path]
+
+    async def update_jsons(self, session, paths: dict, mutate, message: str):
+        """Читай-меняй-пиши нескольких JSON под замками всех путей сразу.
+        Замки держатся до конца коммита: два параллельных заказа не перезапишут друг друга.
+        paths = {path: default}. mutate(dict path->data) -> новый dict (или None = без изменений).
+        RepoError = чтение упало, ничего не записано. Возвращает (data, ok)."""
+        ordered = sorted(paths)
+        for p in ordered:
+            await self._jlock(p).acquire()
+        try:
+            data = {p: await self.get_json(session, p, paths[p]) for p in ordered}
+            new = mutate(data)
+            if new is None:
+                return data, False
+            data = new
+            import json as _json
+            files = {p: _json.dumps(data[p], ensure_ascii=False, indent=1).encode() for p in ordered}
+            ok = await self.commit_files(session, files, message)
+            return data, ok
+        finally:
+            for p in ordered:
+                self._jlock(p).release()
 
     # --- единая очередь: все записи за ~1.5с склеиваются в один коммит ---
     async def commit_files(self, session, files: dict, message: str) -> bool:

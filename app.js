@@ -170,18 +170,27 @@ async function getJSON(path) {
   } catch (e) {}
   return null;
 }
-async function loadCatalog() { const d = await getJSON("data/catalog.json"); S.catalog = d && d !== "404" ? d.items || [] : []; }
+async function loadCatalog() { const d = await getJSON("data/catalog.json");
+  if (d === null) return;  // сеть/429: маркет НЕ вычищаем, показываем прошлое
+  S.catalog = d && d !== "404" ? d.items || [] : []; }
 async function loadMine() {
   if (S.uid === "0") { S.myGifts = []; return; }
   getJSON("data/heartbeat.json").then((hb) => { if (hb && hb !== "404" && hb.ts) { S.hb = hb.ts; drawScanState(); } });
   const d = await getJSON(`data/gifts/${S.uid}.json`);
+  if (d === null) { if (!Array.isArray(S.myGifts) && S.myGifts !== "pending") S.myGifts = "pending"; return; }  // сбой сети: не трогаем
   S.myGifts = d === "404" ? "pending" : d ? d.gifts || [] : [];
   S.myGiftsUpd = d && d !== "404" ? d.updated || 0 : 0;
 }
 async function loadOrders() {
   if (S.uid === "0") { S.orders = []; S.myOrders = []; return; }
-  const a = await getJSON(`data/orders/${S.uid}.json`); S.orders = a && a !== "404" ? a.orders || [] : [];
-  const b = await getJSON(`data/my_orders/${S.uid}.json`); S.myOrders = b && b !== "404" ? b.orders || [] : [];
+  const a = await getJSON(`data/orders/${S.uid}.json`); if (a !== null) S.orders = a && a !== "404" ? a.orders || [] : [];
+  const b = await getJSON(`data/my_orders/${S.uid}.json`); if (b !== null) S.myOrders = b && b !== "404" ? b.orders || [] : [];
+  // подтверждение заказа по coid: интент чистим только когда заказ реально записан у бота
+  const it = loadOrdIntent();
+  if (it && Array.isArray(S.myOrders)) {
+    try { const coid = JSON.parse(it.raw).coid;
+      if (coid && S.myOrders.some((o) => o.coid === coid)) { clearOrdIntent(); toast(t("t_ordok")); } } catch (e) {}
+  }
   const seen = Number(localStorage.getItem("gr_seen_" + S.uid) || 0);
   const fresh = S.orders.filter((o) => o.status === "new" && o.ts > seen).length;
   $("#ordersDot").hidden = !fresh;
@@ -226,6 +235,9 @@ const I18N = {
     t_login:"Нужен вход через бота", t_openlogin:"Открываю бота для входа…", t_copied:"Скопировано",
     t_idcopied:"ID скопирован", t_saved:"Сохранено", t_ordersend:"Заказ отправляется…", t_ordcopy:"Заказ скопирован. Вставь его в чат бота и отправь.",
     t_ordcopyfail:"Не удалось скопировать заказ. Попробуй ещё раз.", t_ordeep:"Откроется бот: нажми кнопку «Маркет» внизу — заказ дойдёт сам.",
+    t_ordok:"✅ Buyurtma egalab beruvchiga yetib bordi", t_ordlink:"Bot ochilmoqda: buyurtma avomatik yuboriladi.", t_pubbig:"Bitta e’longa sovg‘alar juda ko‘p. Bir qismini olib tashlang.",
+    t_ordok:"✅ Заказ доставлен арендодателю", t_ordlink:"Открываю бота: заказ уйдёт автоматически, подтверждение придёт в чат.",
+    t_pubbig:"Слишком много подарков для одной публикации. Сними часть с аренды и опубликуй остальное.",
     t_ordeep2:"Доставляю твой заказ…", t_refresh:"Обновлено", t_cmdcopy:"Команда скопирована. Отправь её боту.",
     t_pubfinish:"Завершаю публикацию…", t_recovered:"Данные восстановлены из каталога", t_pubnone:"Включи хотя бы один подарок",
     t_pubsame:"Уже опубликовано", t_pubsent:"Публикую…",
@@ -272,6 +284,8 @@ const I18N = {
     t_login:"Sign in via the bot", t_openlogin:"Opening the bot…", t_copied:"Copied",
     t_idcopied:"ID copied", t_saved:"Saved", t_ordersend:"Sending your order…", t_ordcopy:"Order copied. Paste it in the bot chat and send.",
     t_ordcopyfail:"Could not copy the order. Try again.", t_ordeep:"The bot will open: tap «Rent» at the bottom — the order will arrive itself.",
+    t_ordok:"✅ Order delivered to the landlord", t_ordlink:"Opening the bot: the order will be sent automatically, confirmation arrives in chat.",
+    t_pubbig:"Too many gifts for one listing. Unlist some and publish the rest.",
     t_ordeep2:"Delivering your order…", t_refresh:"Updated", t_cmdcopy:"Command copied. Send it to the bot.",
     t_pubfinish:"Finishing publication…", t_recovered:"Data restored from the catalog", t_pubnone:"Enable at least one gift",
     t_pubsame:"Already published", t_pubsent:"Publishing…",
@@ -538,21 +552,31 @@ async function sendOrder(obj, showSheetToast) {
     await new Promise((r) => setTimeout(r, 1600));
     if (document.hidden) { clearOrdIntent(); return; }  // доставлено, бот уведомит арендодателя
   }
-  // апп открыт не с reply-кнопки: запоминаем заказ, доводим при следующем входе с клавиатуры
-  const it = loadOrdIntent();
-  const attempts = (it ? (it.attempts || 0) : 0) + (tried ? 1 : 0);
-  saveOrdIntent(raw, attempts);
-  if (attempts >= 2) {
-    // второй раз не доставилось: запасной путь — копипаст в чат бота
-    const payload = b64e(raw);
-    if (await copy(payload)) {
-      toast(t("t_ordcopy"));
-      setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}`), 600);
-    } else toast(t("t_ordcopyfail"));
+  // апп открыт из меню/inline: sendData Telegram НЕ доставляет.
+  // Диплинк-заказ: /start o_<lu>_<h12> — бот берёт цену из листинга владельца, подтверждение в чат.
+  const h12 = await h12of(String(obj.g || ""));
+  clearOrdIntent();
+  if (h12) {
+    toast(t("t_ordlink"));
+    openTg(`https://t.me/${CONFIG.botUsername}?start=o_${obj.lu}_${h12}`);
     return;
   }
-  toast(t("t_ordeep"));
-  setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}?start=ord`), 700);
+  // фолбэк (нет crypto.subtle, напр. http): старая цепочка с копипастом
+  const payload = b64e(raw);
+  if (await copy(payload)) {
+    toast(t("t_ordcopy"));
+    setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}`), 600);
+  } else toast(t("t_ordcopyfail"));
+}
+
+// h12 = первые 12 символов base64url(SHA-256(ikey)) — тот же хеш бот считает на своей стороне
+async function h12of(key) {
+  try {
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+    const b = btoa(String.fromCharCode(...new Uint8Array(buf)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return b.slice(0, 12);
+  } catch (e) { return ""; }
 }
 
 // автодоводка: апп открыт с reply-клавиатуры («Маркет»/«Сдать подарок») + есть свежий заказ
@@ -560,16 +584,13 @@ function maybeAutoOrder() {
   if (!_kbMode || S.uid === "0") return;
   const it = loadOrdIntent();
   if (!it) return;
-  if (Date.now() - it.ts > 10 * 60 * 1000) { clearOrdIntent(); return; }
+  if (Date.now() - it.ts > 10 * 60 * 1000) { clearOrdIntent(); return; }   // срок жизни 10 мин
   saveOrdIntent(it.raw, (it.attempts || 0) + 1);
   toast(t("t_ordeep2"));
   setTimeout(() => { try { tg.sendData(it.raw); } catch (e) {} }, 500);
   // если доставка прошла — апп закроется; остаёмся на чек-поинте подтверждения ниже
-  setTimeout(() => {
-    // kb-режим: sendData доставлен (Telegram закрывает апп). Если апп почему-то жив,
-    // считаем доставленным и молча чистим интент: повторная отправка дала бы дубль.
-    clearOrdIntent();
-  }, 2600);
+  // интент НЕ чистим по таймеру: подтверждение приходит из my_orders по coid (loadOrders),
+  // дубли режет бот по coid в репо. Чистим только по 10-минутной давности выше.
 }
 
 /* ============================================================
@@ -693,7 +714,7 @@ function drawScanState() {
   if (!Array.isArray(S.myGifts)) { el.innerHTML = ``; return; }
   // бот сканирует профиль каждые 2-10с; штамп подарков меняется только при изменении, поэтому живость берём из heartbeat
   const hbAge = S.hb ? Math.round(Date.now() / 1000 - S.hb) : null;
-  el.innerHTML = hbAge != null && hbAge < 330
+  el.innerHTML = hbAge != null && hbAge < 1260
     ? `<i class="dot-live"></i>${t("scan_sync")}`
     : `<i class="dot-off"></i>${t("scan_boot")}`;
 }
@@ -730,7 +751,7 @@ function drawMine() {
     const listed = listedIds.has(k);
     const c1 = hex(g.cc) || "#5aa7e0", c2 = hex(g.ec) || "#2b3f66";
     return `<div class="lrow ${listed ? "is-listed" : ""}" data-g="${esc(k)}">
-      <div class="lthumb" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : repoIds.has(k) && g.th_fuid ? `<img src="assets/gifts/${esc(g.th_fuid)}.webp" alt="" onerror="this.remove()">` : g.th_fuid ? `<img data-livethumb="${esc(k)}" alt="">` : "🎁"}</div>
+      <div class="lthumb" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(RAW + g.t.replace(/^\/?/, ""))}" alt="" onerror="if(this.dataset.f)this.remove();else{this.dataset.f=1;this.src='${esc(g.t)}'}">` : repoIds.has(k) && g.th_fuid ? `<img src="${esc(RAW + "assets/gifts/" + g.th_fuid + ".webp")}" alt="" onerror="if(this.dataset.f)this.remove();else{this.dataset.f=1;this.src='assets/gifts/${esc(g.th_fuid)}.webp'}">` : "🎁"}</div>
       <div class="lmeta"><b>${esc(dname(g))}${g.num != null ? " #" + esc(g.num) : ""}</b><span>${esc(g.model || (g.stars ? g.stars + " ★" : ""))}${g.mr ? " · " + pct(g.mr) : ""}</span></div>
       ${listed ? `<button class="unl" data-unl="${esc(k)}">${t("b_remove")}</button>` : ""}
       <label class="switch"><input type="checkbox" ${tr.on ? "checked" : ""}><i></i></label>
@@ -741,16 +762,6 @@ function drawMine() {
         <select class="inp" data-r>${PERIODS.map((c) => `<option ${c === (tr.per || "день") ? "selected" : ""}>${c}</option>`).join("")}</select></div>
     </div>`;
   }).join("");
-  // подаркам только из live-скана: прямая ссылка на стикер через getFile
-  $$("img[data-livethumb]", box).forEach(async (el) => {
-    const k = el.dataset.livethumb;
-    const g = list.find((x) => ikey(x) === k);
-    if (!g) return;
-    let u = await thumbUrl(g);
-    if (!u) { await new Promise((r) => setTimeout(r, 900)); u = await thumbUrl(g); }
-    if (u && el.isConnected) el.src = u;
-    else if (!u && el.isConnected) el.remove();
-  });
   $$("[data-unl]", box).forEach((b) => b.onclick = async (e) => {
     e.stopPropagation();
     const gid = b.dataset.unl;
@@ -774,7 +785,7 @@ function drawMine() {
 async function openMyGiftDetail(g, fromRepo) {
   haptic();
   let t = null;
-  if (fromRepo && g.th_fuid) t = `assets/gifts/${g.th_fuid}.webp`;
+  if (fromRepo && g.th_fuid) t = RAW + "assets/gifts/" + g.th_fuid + ".webp";   // мимо Pages-кэша: напрямую из репо
   else t = await thumbUrl(g);
   const u = S.user || {};
   openDetail({
@@ -881,6 +892,23 @@ window.addEventListener("scroll", () => {
   _scrTmr = setTimeout(() => { if (bar) bar.classList.remove("down"); }, 900);
 }, { passive: true });
 
+// асинхронная версия: h12-хеши считаются через crypto.subtle
+async function compactListingAsync(obj) {
+  const grp = {};
+  for (const g of (obj.gifts || [])) {
+    const k = g.p + "\u0001" + g.cur + "\u0001" + g.per;
+    (grp[k] = grp[k] || { p: g.p, cur: g.cur, per: g.per, keys: [] }).keys.push(g.g);
+  }
+  const out = [];
+  for (const k of Object.keys(grp)) {
+    const hs = [];
+    for (const g of grp[k].keys) { const h = await h12of(String(g)); if (!h) return null; hs.push(h); }
+    out.push({ p: grp[k].p, cur: grp[k].cur, per: grp[k].per, g: hs });
+  }
+  const res = { l: 1, uid: obj.uid, name: obj.name, uname: obj.uname, about: obj.about, req: obj.req, grp: out };
+  return new TextEncoder().encode(JSON.stringify(res)).length <= 3800 ? res : null;
+}
+
 async function publish(force) {
   const obj = buildListing();
   const wasListed = (S.catalog || []).some((g) => g.owner && String(g.owner.uid) === S.uid);
@@ -890,7 +918,13 @@ async function publish(force) {
     const wantNow = obj.gifts.map((g) => g.g + ":" + g.p + g.cur + g.per).sort().join("|");
     if (wantNow === myCatalogKey()) { haptic(); toast(t("t_pubsame")); clearPubIntent(); return; }
   }
-  const raw = JSON.stringify(obj);
+  let raw = JSON.stringify(obj);
+  // лимит sendData 4096 байт: ~35-40 подарков обычным форматом уже не доходит. Молчать нельзя.
+  if (new TextEncoder().encode(raw).length > 3800) {
+    const compact = await compactListingAsync(obj);
+    if (!compact) { haptic("err"); toast(t("t_pubbig")); return; }
+    raw = JSON.stringify(compact);
+  }
   const btn = $("#pub");
   const want = obj.gifts.map((g) => g.g + ":" + g.p + g.cur + g.per).sort().join("|");
 
@@ -900,7 +934,7 @@ async function publish(force) {
   S.catalog = (S.catalog || []).filter((c) => !(c.owner && String(c.owner.uid) === S.uid)).concat(obj.gifts.map((g) => {
     const k = known.find((x) => ikey(x) === g.g) || {};
     return { g: g.g, n: k.name || "", m: k.model || "", s: k.symbol || "", num: k.num, cc: k.cc, ec: k.ec, mr: k.mr, sr: k.sr, br: k.br,
-      b: k.backdrop || "", t: k.th_fuid ? `assets/gifts/${k.th_fuid}.webp` : "", p: g.p, cur: g.cur, per: g.per, ts: Math.floor(Date.now() / 1000), owner: me, _local: 1 };
+      b: k.backdrop || "", t: k.th_fuid ? RAW + "assets/gifts/" + k.th_fuid + ".webp" : "", p: g.p, cur: g.cur, per: g.per, ts: Math.floor(Date.now() / 1000), owner: me, _local: 1 };
   }));
   S._pubWant = want; S._pubAt = Date.now(); S._pubWasEmpty = !obj.gifts.length;
   if (btn) btn.classList.add("busy");
@@ -909,10 +943,14 @@ async function publish(force) {
 
   let tried = false;
   try { if (_canSendData()) { tg.sendData(raw); tried = true; } } catch (e) {}
+  if (tried && _kbMode) {
+    // с нижней кнопки Telegram всегда закрывает апп и доставляет: не ждём document.hidden
+    // (на медленных телефонах он не срабатывает -> ложный «провал» и дубли)
+    clearPubIntent(); return;
+  }
   if (tried) {
-    // если Telegram принял sendData, мини-апп закроется; живой апп через 1.6с = доставки не было
     await new Promise((r) => setTimeout(r, 1600));
-    if (document.hidden) { clearPubIntent(); return; }  // доставка подтверждена закрытием: публикация у бота
+    if (document.hidden) { clearPubIntent(); return; }
   }
   // sendData не доставил (апп открыт из inline-кнопки или menu-кнопки): запоминаем намерение,
   // публикация завершится сама, как только юзер откроет апп нижней кнопкой «Сдать подарок»
@@ -1212,10 +1250,12 @@ async function init() {
 
 function autoPollMine() {
   const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
-  setInterval(async () => {
-    if (document.hidden) return;
+  let _pollDelay = 15000, _hbAt = 0;
+  async function pollTick() {
+    if (document.hidden) return true;
     // каталог: кто-то опубликовал/сменил цену -> обновляем ленту
     const c = await getJSON("data/catalog.json");
+    if (c === null) return false;   // сеть/429: не трогаем данные, интервал вырастет
     let items = c && c !== "404" ? c.items || [] : [];
     // публикация в полёте (бот коммитит ~5-10с): не затираем свои оптимистичные записи репо-версией, где их ещё нет
     const pendingPub = S._pubWant != null && S._pubAt && Date.now() - S._pubAt < 25000;
@@ -1235,9 +1275,11 @@ function autoPollMine() {
         if (S.tab === "profile") { renderProfile(); confirmPublished(); }
       }
     }
-    const hb = await getJSON("data/heartbeat.json"); if (hb && hb !== "404" && hb.ts) S.hb = hb.ts;
-    if (S.uid === "0") return;
+    if (Date.now() - _hbAt > 60000) { _hbAt = Date.now();   // heartbeat достаточно раз в минуту
+      getJSON("data/heartbeat.json").then((hb) => { if (hb && hb !== "404" && hb.ts) { S.hb = hb.ts; drawScanState(); } }); }
+    if (S.uid === "0") return true;
     const d = await getJSON(`data/gifts/${S.uid}.json`);
+    if (d === null) return true;   // сбой: прошлые подарки не трогаем
     const arr = d && d !== "404" ? d.gifts || [] : null;
     if (d && d !== "404" && d.updated) S.myGiftsUpd = d.updated;
     if (arr && !same(arr, S.myGifts === "pending" ? "pending" : S.myGifts)) {
@@ -1246,9 +1288,26 @@ function autoPollMine() {
       drawScanState();
     } else if (S.tab === "profile") drawScanState();
     const o = await getJSON(`data/orders/${S.uid}.json`);
-    const orders = o && o !== "404" ? o.orders || [] : null;
+    const orders = o === null ? null : o && o !== "404" ? o.orders || [] : null;
     if (orders && !same(orders, S.orders)) { S.orders = orders; if (S.tab === "orders") render(); }
-  }, 4000);
+    // подтверждение диплинк-заказа: my_orders с coid (записан ботом)
+    if (S.uid !== "0") {
+      const mo = await getJSON(`data/my_orders/${S.uid}.json`);
+      if (mo !== null && mo !== "404") {
+        const myOrders = mo.orders || [];
+        if (!same(myOrders, S.myOrders)) { S.myOrders = myOrders; if (S.tab === "orders") render(); }
+        const it = loadOrdIntent();
+        if (it) { try { const coid = JSON.parse(it.raw).coid;
+          if (coid && myOrders.some((x) => x.coid === coid)) { clearOrdIntent(); toast(t("t_ordok")); } } catch (e) {} }
+      }
+    }
+    return true;
+  }
+  (function schedule() { setTimeout(async () => {
+    const ok = await pollTick();
+    _pollDelay = ok ? 15000 : Math.min(60000, _pollDelay * 2);
+    schedule();
+  }, _pollDelay); })();
   // вернулся в мини-апп из бота -> сразу подтянуть свежее
   const onback = async () => {
     if (document.hidden) return;

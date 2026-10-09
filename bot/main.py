@@ -24,7 +24,11 @@ import re
 import aiohttp
 
 import signing
-from repo import Repo
+from repo import Repo, RepoError
+
+
+class GiftsFetchError(Exception):
+    """getUserGifts упал (flood/сеть): список неполный, данные юзера менять НЕЛЬЗЯ."""
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("bot")
@@ -93,22 +97,43 @@ def rate_limited(uid, key, sec):
     return False
 
 
-async def deny_blocked(session, uid):
-    """Проверить denylist.json: True если uid заблокирован."""
-    deny = await repo.get_json(session, "denylist.json", {"uids": []}) or {"uids": []}
-    return str(uid) in {str(x) for x in deny.get("uids", [])}
+_DENY: dict = {"ts": 0.0, "uids": set()}
+
+async def deny_blocked(session, uid) -> bool:
+    """Denylist в памяти: перечитывается раз в 5 мин и сразу после /block.
+    При сбое чтения работаем по кэшу и НЕ пропускаем никого лишнего."""
+    if not repo.enabled:
+        return False
+    if time.time() - _DENY["ts"] > 300:
+        _DENY["ts"] = time.time()
+        try:
+            deny = await repo.get_json(session, "denylist.json", {"uids": []}) or {"uids": []}
+            _DENY["uids"] = {str(x) for x in deny.get("uids", [])}
+        except RepoError as e:
+            log.warning("denylist не прочитан, работаем по кэшу: %s", e)
+    return str(uid) in _DENY["uids"]
+
+def _h12(key) -> str:
+    """Первые 12 символов base64url(SHA-256(key)) — компактный ключ подарка для диплинков."""
+    return base64.urlsafe_b64encode(hashlib.sha256(str(key).encode()).digest()).decode().rstrip("=")[:12]
+
+def _ikey(g) -> str:
+    """Ключ экземпляра подарка: gid#inst (как в app.js ikey())."""
+    return str(g.get("gid") or "") + (("#" + str(g.get("inst") or "")) if g.get("inst") else "")
 
 
 # ---------------------------------------------------------------- gifts
 async def fetch_user_gifts(session, user_id) -> list[dict]:
-    """getUserGifts с пагинацией, только unique (NFT)."""
-    gifts, offset = [], []
+    """getUserGifts с пагинацией. Ошибка -> GiftsFetchError: пустой список наружу не отдаём,
+    иначе build_user_files сотрёт подарки юзера, а handle_publish всю его витрину."""
+    gifts, offset = [], ""
     _seen: dict[str, int] = {}
-    for _ in range(20):
-        data = await tg_call(session, "getUserGifts",
-                             {"user_id": int(user_id), "offset": offset, "limit": 100})
-        if not data.get("ok"):
-            return gifts
+    try:
+        for _ in range(20):
+            data = await tg_call(session, "getUserGifts",
+                                 {"user_id": int(user_id), "offset": offset, "limit": 100})
+            if not data.get("ok"):
+                raise GiftsFetchError(f"{user_id}: {data.get('description')}")
         res = data["result"]
         for g in res.get("gifts", []):
             if g.get("is_burned"):
@@ -162,10 +187,14 @@ async def fetch_user_gifts(session, user_id) -> list[dict]:
                     "th_fid": thumb.get("file_id"),
                     "p": "unique",
                 })
-        offset = res.get("next_offset")
-        if not offset:
-            break
-    return gifts
+            offset = res.get("next_offset")
+            if not offset:
+                break
+        return gifts
+    except GiftsFetchError:
+        raise
+    except Exception as e:
+        raise GiftsFetchError(f"{user_id}: {e!r}")
 
 
 async def download_thumb(session, file_id) -> bytes | None:
@@ -184,27 +213,29 @@ async def download_thumb(session, file_id) -> bytes | None:
 _gift_hash: dict[int, str] = {}
 
 
-async def build_user_files(session, uid) -> dict:
-    """Скачивает подарки и недостающие стикеры, возвращает только изменившиеся файлы."""
+async def build_user_files(session, uid) -> tuple:
+    """Собирает изменившиеся файлы подарков. Глобальные _gift_hash/KNOWN_THUMBS НЕ трогает:
+    их обновляет вызывающий код ПОСЛЕ успешного коммита (сбой коммита = повтор на следующем тике).
+    Возвращает (files, hash, new_thumbs)."""
     gifts = await fetch_user_gifts(session, uid)
     body = json.dumps({"uid": uid, "gifts": gifts}, ensure_ascii=False, sort_keys=True)
     h = hashlib.md5(body.encode()).hexdigest()
     files: dict = {}
     if _gift_hash.get(uid) != h:
-        _gift_hash[uid] = h
         files[f"data/gifts/{uid}.json"] = json.dumps(
             {"uid": uid, "updated": int(time.time()), "gifts": gifts},
             ensure_ascii=False, sort_keys=True).encode()
+    new_thumbs: list = []
     async def one(g):
         fuid, fid = g.get("th_fuid"), g.get("th_fid")
         if not fuid or not fid or fuid in KNOWN_THUMBS:
             return
-        KNOWN_THUMBS.add(fuid)
         img = await download_thumb(session, fid)
-        if img:
+        if img:   # пометим известным только реально скачанный стикер
             files[f"assets/gifts/{fuid}.webp"] = img
+            new_thumbs.append(fuid)
     await asyncio.gather(*[one(g) for g in gifts])
-    return files
+    return files, h, new_thumbs
 
 
 KNOWN_THUMBS: set = set()
@@ -231,10 +262,18 @@ LAST_SEEN: dict[int, float] = {}
 async def refresh_user(session, uid) -> bool:
     if not repo.enabled:
         return False
-    files = await build_user_files(session, uid)
+    try:
+        files, h, thumbs = await build_user_files(session, uid)
+    except GiftsFetchError as e:
+        log.warning("скан %s пропущен (ошибка, старые данные НЕ затёрты): %s", uid, e)
+        return False
     if not files:
         return False
-    return await repo.commit_files(session, files, f"bot: подарки {uid}")
+    ok = await repo.commit_files(session, files, f"bot: подарки {uid}")
+    if ok:   # только теперь запоминаем: без записи в репо хеш не трогаем
+        _gift_hash[uid] = h
+        KNOWN_THUMBS.update(thumbs)
+    return ok
 
 
 async def maybe_touch_user(session, uid, force=False):
@@ -277,17 +316,28 @@ async def refresh_all_users(session, hot_only=False):
             targets.append(u)
     if not targets:
         return
+    hashes, thumbs_all = {}, {}
     async def one(u):
         try:
-            return await build_user_files(session, u["id"])
-        except Exception:
-            log.exception("getUserGifts упал для %s", u.get("id")); return {}
+            files, h, thumbs = await build_user_files(session, u["id"])
+            return {**files, "__h": (u["id"], h, thumbs)}
+        except GiftsFetchError as e:
+            log.warning("скан %s пропущен: %s", u.get("id"), e); return {}
     parts = await asyncio.gather(*[one(u) for u in targets])
     changed = {}
     for p in parts:
+        meta = p.pop("__h", None)
+        if meta:
+            hashes[meta[0]], thumbs_all[meta[0]] = meta[1], meta[2]
         changed.update(p)
+    ok = True
     if changed:
-        await repo.commit_files(session, changed, f"bot: подарки ({len(targets)} проф.)")
+        ok = await repo.commit_files(session, changed, f"bot: подарки ({len(targets)} проф.)")
+    if ok:
+        for uid_, h_ in hashes.items():
+            _gift_hash[uid_] = h_
+        for uid_, th_ in thumbs_all.items():
+            KNOWN_THUMBS.update(th_)
 
 
 # ---------------------------------------------------------------- catalog
@@ -296,6 +346,7 @@ LISTINGS: dict = {}
 
 async def rebuild_catalog(session):
     """Собирает data/catalog.json из data/listings/*.json (плоский список подарков в аренде)."""
+    # RepoError наверх: при сбое чтения каталог НЕ собираем пустым и НЕ коммитим
     users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
     deny = await repo.get_json(session, "denylist.json", {"uids": [], "hashes": []}) or {}
     blocked = {str(x) for x in deny.get("uids", [])}
@@ -343,22 +394,41 @@ async def handle_publish(session, chat_id, from_id, obj):
     if rate_limited(from_id, "pub", 5):
         await send_text(session, chat_id, "Не так часто: предыдущая публикация ещё обрабатывается.")
         return
-    real = await fetch_user_gifts(session, from_id)
+    try:
+        real = await fetch_user_gifts(session, from_id)
+    except GiftsFetchError as e:
+        log.warning("publish %s: скан упал, витрину НЕ трогаем: %s", from_id, e)
+        await send_text(session, chat_id, "Не удалось проверить профиль, повтори через минуту.")
+        return
     out, fake = [], []
     now = int(time.time())
-    for g in (obj.get("gifts") or [])[:100]:
-        r = find_gift(real, g.get("g"))
-        if not r:
-            fake.append(clean(g.get("g"), 24))
-            continue
-        out.append({
-            "g": str(g.get("g")), "inst": r.get("inst", ""), "n": r.get("name", ""), "m": r.get("model", ""), "s": r.get("symbol", ""),
+
+    def entry(r, p_, cur_, per_):
+        return {
+            "g": _ikey(r), "inst": r.get("inst", ""), "n": r.get("name", ""), "m": r.get("model", ""), "s": r.get("symbol", ""),
             "num": r.get("num"), "cc": r.get("cc"), "ec": r.get("ec"),
             "mr": r.get("mr"), "sr": r.get("sr"), "br": r.get("br"), "b": r.get("backdrop", ""),
             "t": f"assets/gifts/{r['th_fuid']}.webp" if r.get("th_fuid") else "",
-            "p": str(g.get("p") or "")[:20], "cur": str(g.get("cur") or "UZS")[:5],
-            "per": str(g.get("per") or "месяц")[:10], "ts": now,
-        })
+            "p": str(p_ or "")[:20], "cur": str(cur_ or "UZS")[:5],
+            "per": str(per_ or "месяц")[:10], "ts": now,
+        }
+
+    if obj.get("grp"):
+        # компактный формат (>40 подарков): сгруппирован по цене, ключи = h12-хеши
+        by_h = {_h12(_ikey(r)): r for r in real}
+        for grp in (obj.get("grp") or [])[:200]:
+            p_, cur_, per_ = clean(grp.get("p"), 20), clean(grp.get("cur") or "UZS", 5), clean(grp.get("per") or "месяц", 10)
+            for h12 in (grp.get("g") or [])[:100]:
+                r = by_h.get(str(h12)[:12])
+                if not r:
+                    fake.append(clean(h12, 24)); continue
+                out.append(entry(r, p_, cur_, per_))
+    else:
+        for g in (obj.get("gifts") or [])[:100]:
+            r = find_gift(real, g.get("g"))
+            if not r:
+                fake.append(clean(g.get("g"), 24)); continue
+            out.append(entry(r, clean(g.get("p"), 20), str(g.get("cur") or "UZS")[:5], str(g.get("per") or "месяц")[:10]))
     if fake:
         await send_text(session, chat_id, "Этих подарков нет в профиле, пропущены: " + ", ".join(fake))
     listing = {
@@ -373,17 +443,47 @@ async def handle_publish(session, chat_id, from_id, obj):
     if not repo.enabled:
         await send_text(session, chat_id, "Репозиторий не подключён.")
         return
-    LISTINGS[str(from_id)] = listing
-    cat = await rebuild_catalog(session)
+    try:
+        cat = await rebuild_catalog(session)
+    except RepoError:
+        await send_text(session, chat_id, "Сервис перегружен, повтори через минуту.")
+        return
     ok = await repo.commit_files(session, {
         f"data/listings/{from_id}.json": json.dumps(listing, ensure_ascii=False).encode(),
         "data/catalog.json": cat}, f"bot: листинг {from_id} ({len(out)})")
+    if ok:
+        LISTINGS[str(from_id)] = listing   # кэш только после успешной записи
     await send_text(session, chat_id,
         f"✅ Опубликовано: {len(out)}. Уже в каталоге." if ok else "⚠️ Не удалось сохранить, повтори через минуту.")
 
 # ---------------------------------------------------------------- orders
+async def handle_deeplink_order(session, from_user, arg):
+    """Заказ по диплинку /start o_<lu>_<h12> (мини-апп открыт из меню/inline: sendData не работает).
+    Цену берём из листинга арендодателя, НЕ из клиента."""
+    parts = arg.split("_", 1)
+    if len(parts) != 2 or not parts[0].isdigit() or not parts[1]:
+        return
+    lu, h12 = parts[0], clean(parts[1], 12)
+    try:
+        gdata = await repo.get_json(session, f"data/gifts/{lu}.json", {"gifts": []}) or {"gifts": []}
+        lst = await repo.get_json(session, f"data/listings/{lu}.json") or {}
+    except RepoError:
+        await send_text(session, from_user["id"], "Сервис перегружен, повтори через минуту.")
+        return
+    key = next((k for k in (_ikey(g) for g in gdata.get("gifts", [])) if _h12(k) == h12), None)
+    if not key:
+        await send_text(session, from_user["id"], "Этот подарок уже недоступен: витрина обновилась.")
+        return
+    lg = next((x for x in (lst.get("gifts") or []) if str(x.get("g")) == key), {})
+    coid = f"dl-{from_user['id']}-{h12}-{int(time.time()) // 3600}"
+    await handle_order(session, from_user, {
+        "o": 1, "lu": lu, "g": key,
+        "p": lg.get("p", ""), "cur": lg.get("cur", ""), "per": lg.get("per", ""),
+        "c": "", "coid": coid})
+
+
 async def handle_order(session, from_user, obj):
-    """Клиент вставил пейлоад заказа: {o:1, lu, g, p, cur, per, c}."""
+    """Клиент вставил пейлоад заказа: {o:1, lu, g, p, cur, per, c}. Или диплинк-объект от бота."""
     if await deny_blocked(session, from_user.get("id")):
         await send_text(session, from_user["id"], "Доступ ограничен.")
         return
@@ -398,60 +498,76 @@ async def handle_order(session, from_user, obj):
         await send_text(session, from_user["id"], "Заказ неполный: нет арендодателя или подарка.")
         return
 
-    users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
-    landlord = next((u for u in users.get("users", []) if str(u["id"]) == lu), None)
+    try:
+        landlord = next((u for u in await get_users_cached(session) if str(u["id"]) == lu), None)
+        # gifts через contents API: у raw.githubusercontent кэш до 5 минут,
+        # свежий подарок отклонялся бы как «витрина устарела»
+        gdata = await repo.get_json(session, f"data/gifts/{lu}.json", {"gifts": []}) or {"gifts": []}
+    except RepoError:
+        await send_text(session, from_user["id"], "Сервис перегружен, повтори через минуту.")
+        return
     if not landlord:
         await send_text(session, from_user["id"], "Арендодатель не найден в системе.")
         return
-
-    raw = await repo.get_raw(session, f"data/gifts/{lu}.json")
-    gifts = json.loads(raw).get("gifts", []) if raw else []
-    gift = find_gift(gifts, gid)
+    gift = find_gift(gdata.get("gifts", []), gid)
     if not gift:
         await send_text(session, from_user["id"],
             "Этого подарка нет в коллекции арендодателя. Витрина устарела.")
         return
 
-    orders = await repo.get_json(session, f"data/orders/{lu}.json", {"orders": [], "seq": 0}) \
-        or {"orders": [], "seq": 0}
-    if coid:
-        dup = next((o for o in orders.get("orders", []) if str(o.get("coid")) == coid), None)
-        if dup:
-            # дубль доставки (медленный телефон не пометил апп скрытым): молча пропускаем,
-            # клиент и арендодатель уже получили уведомления, шум в чате не нужен
-            return
+    opath = f"data/orders/{lu}.json"
+    mpath = f"data/my_orders/{from_user['id']}.json"
+    # дедуп ДО rate-limit: легитимный повтор (двойной тап) молча проглатывается
+    try:
+        existing = await repo.get_json(session, opath, {"orders": [], "seq": 0}) or {"orders": [], "seq": 0}
+    except RepoError:
+        await send_text(session, from_user["id"], "Сервис перегружен, повтори через минуту.")
+        return
+    if coid and any(str(o.get("coid")) == coid for o in existing.get("orders", [])):
+        return   # дубль доставки: клиент и арендодатель уже получили уведомления
     if rate_limited(from_user.get("id"), "ord", 3):
         # анти-спам: не чаще одного заказа на юзера в 3 секунды
         await send_text(session, from_user["id"], "Предыдущий заказ ещё обрабатывается, подожди пару секунд.")
         return
-    seq = int(orders.get("seq") or 0) + 1
-    orders["seq"] = seq
-    orders.setdefault("orders", []).append({
-        "id": str(seq), "coid": coid,
-        "gid": gid, "name": h(gift.get("name", "")), "num": gift.get("num"),
-        "price": price, "cur": cur, "per": per, "comment": comment,
-        "client_uid": from_user["id"],
-        "client_username": from_user.get("username", ""),
-        "client_first": from_user.get("first_name", ""),
-        "ts": int(time.time()), "status": "new",
-    })
-    orders["orders"] = orders["orders"][-200:]
 
-    mine = await repo.get_json(session, f"data/my_orders/{from_user['id']}.json", {"orders": []}) \
-        or {"orders": []}
-    mine["orders"] = (mine.get("orders") or [])[-100:] + [{
-        "id": str(seq), "lu": lu, "name": h(gift.get("name", "")), "num": gift.get("num"),
-        "price": price, "cur": cur, "per": per,
-        "ts": int(time.time()), "status": "new",
-        "owner_username": landlord.get("username", "")}]
-
-    saved = False
-    if repo.enabled:
-        # один атомарный коммит: и файл арендодателя, и копия клиента. Без записи заказ не существует.
-        saved = await repo.commit_files(session, {
-            f"data/orders/{lu}.json": json.dumps(orders, ensure_ascii=False, indent=1).encode(),
-            f"data/my_orders/{from_user['id']}.json": json.dumps(mine, ensure_ascii=False).encode()},
-            f"bot: заказ #{seq} для {lu}")
+    state = {"dup": False, "seq": 0}
+    fu, g_, lu_ = from_user, gift, lu
+    def mut(d):
+        orders, mine = d[opath], d[mpath]
+        if coid and any(str(o.get("coid")) == coid for o in orders.get("orders", [])):
+            state["dup"] = True   # параллельный дубль: под замком он уже записан
+            return d
+        seq = int(orders.get("seq") or 0) + 1
+        orders["seq"] = seq
+        state["seq"] = seq
+        orders.setdefault("orders", []).append({
+            "id": str(seq), "coid": coid,
+            "gid": gid, "name": h(g_.get("name", "")), "num": g_.get("num"),
+            "price": price, "cur": cur, "per": per, "comment": comment,
+            "client_uid": fu["id"],
+            "client_username": fu.get("username", ""),
+            "client_first": fu.get("first_name", ""),
+            "ts": int(time.time()), "status": "new",
+        })
+        orders["orders"] = orders["orders"][-200:]
+        mine["orders"] = (mine.get("orders") or [])[-100:] + [{
+            "id": str(seq), "coid": coid, "lu": lu_, "name": h(g_.get("name", "")), "num": g_.get("num"),
+            "price": price, "cur": cur, "per": per,
+            "ts": int(time.time()), "status": "new",
+            "owner_username": landlord.get("username", "")}]
+        d[opath], d[mpath] = orders, mine
+        return d
+    try:
+        # оба файла под одним замковым набором: параллельные заказы не перезапишут друг друга
+        _, saved = await repo.update_jsons(session,
+            {opath: {"orders": [], "seq": 0}, mpath: {"orders": []}},
+            mut, f"bot: заказ для {lu}")
+    except RepoError:
+        await send_text(session, from_user["id"], "Сервис перегружен, повтори через минуту.")
+        return
+    if state["dup"]:
+        return
+    seq = state["seq"]
 
     cust = ("@" + from_user["username"]) if from_user.get("username") \
         else f"tg://user?id={from_user['id']}"
@@ -500,29 +616,36 @@ async def handle_orders_list(session, from_id):
 
 
 async def handle_order_status(session, from_id, oid, status):
-    path = f"data/orders/{from_id}.json"
-    orders = await repo.get_json(session, path) or {"orders": []}
-    items = orders.get("orders", [])
-    it = next((o for o in items if str(o.get("id")) == str(oid)), None)
+    opath = f"data/orders/{from_id}.json"
+    try:
+        orders = await repo.get_json(session, opath) or {"orders": []}
+    except RepoError:
+        await send_text(session, from_id, "Сервис перегружен, повтори через минуту.")
+        return
+    it = next((o for o in orders.get("orders", []) if str(o.get("id")) == str(oid)), None)
     if not it:
         await send_text(session, from_id, f"Заказ #{oid} не найден.")
         return
-    it["status"] = status
-    files = {path: json.dumps(orders, ensure_ascii=False, indent=1).encode()}
-    # синхронизируем копию клиента (вкладка «Мои»), чтобы статус не расходился
-    if it.get("client_uid"):
-        try:
-            cpath = f"data/my_orders/{it['client_uid']}.json"
-            mine = await repo.get_json(session, cpath) or {"orders": []}
-            cit = next((o for o in (mine.get("orders") or []) if str(o.get("id")) == str(oid)), None)
+    cpath = f"data/my_orders/{it['client_uid']}.json" if it.get("client_uid") else None
+    paths = {opath: {"orders": []}}
+    if cpath:
+        paths[cpath] = {"orders": []}
+    def mut(d):
+        o = next((x for x in d[opath].get("orders", []) if str(x.get("id")) == str(oid)), None)
+        if not o:
+            return d
+        o["status"] = status
+        if cpath:
+            cit = next((x for x in (d[cpath].get("orders") or []) if str(x.get("id")) == str(oid)), None)
             if cit:
                 cit["status"] = status
-                files[cpath] = json.dumps(mine, ensure_ascii=False, indent=1).encode()
-        except Exception:
-            log.exception("sync статуса в my_orders не удался")
-    if repo.enabled:
-        await repo.commit_files(session, files,
-                                f"bot: заказ #{oid} -> {status}")
+        return d
+    try:
+        # синхронно меняем файл арендодателя и копию клиента под замками обоих путей
+        await repo.update_jsons(session, paths, mut, f"bot: заказ #{oid} -> {status}")
+    except RepoError:
+        await send_text(session, from_id, "Сервис перегружен, повтори через минуту.")
+        return
     note = "выполнен" if status == "done" else "отменён"
     await send_text(session, from_id, f"Заказ #{oid}: {note}.")
     try:
@@ -608,14 +731,21 @@ async def handle_start(session, chat_id, from_user, args=""):
         parts = args[3:].split("_", 1)
         accused = parts[0]
         hash_part = parts[1] if len(parts) > 1 else ""
-        complaints = await repo.get_json(session, "data/complaints.json", {"list": []}) or {"list": []}
-        complaints["list"] = (complaints.get("list") or [])[-200:] + [{
-            "from": from_user["id"], "accused": accused, "hash": hash_part,
-            "ts": int(time.time())}]
-        if repo.enabled:
-            await repo.commit_files(session, {
-                "data/complaints.json": json.dumps(complaints, ensure_ascii=False, indent=1).encode()},
-                f"bot: жалоба на {accused}")
+        complaint_text = f"жалоба на {accused}" + (f": {hash_part}" if hash_part else "")
+        try:
+            def mut(d):
+                c = d["data/complaints.json"]
+                c["list"] = (c.get("list") or [])[-200:] + [{
+                    "uid": from_user["id"], "username": from_user.get("username", ""),
+                    "first": from_user.get("first_name", ""), "text": complaint_text,
+                    "ts": int(time.time())}]
+                d["data/complaints.json"] = c
+                return d
+            await repo.update_jsons(session, {"data/complaints.json": {"list": []}},
+                                    mut, f"bot: жалоба {from_user['id']}")
+        except RepoError:
+            await send_text(session, chat_id, "Сервис перегружен, повтори через минуту.")
+            return
         await send_text(session, chat_id, "Жалоба записана, админ увидит её командой /complaints.")
         return
 
@@ -626,6 +756,9 @@ async def handle_start(session, chat_id, from_user, args=""):
                         {"text": "Сдать подарок", "web_app": {"url": app_url + "&m=pub"}}]],
           "resize_keyboard": True, "is_persistent": True} if app_url else None
     _KB_SENT.add(from_user["id"])
+    if args.startswith("o_"):
+        # заказ диплинком из мини-аппа, открытого не с reply-кнопки (sendData там не доставляется)
+        asyncio.create_task(handle_deeplink_order(session, from_user, args[2:]))
     if args == "pub":
         txt = "Нажми «Сдать подарок» внизу: публикация завершится автоматически."
     elif args == "scan":
@@ -638,11 +771,13 @@ async def handle_start(session, chat_id, from_user, args=""):
                "Условия и FAQ с фото-инструкциями: в приложении, вкладка «Профиль». Оплата P2P напрямую между пользователями.")
         if base_url:
             try:
-                await tg_call(session, "sendPhoto", {
+                r_photo = await tg_call(session, "sendPhoto", {
                     "chat_id": chat_id, "photo": base_url + "assets/banner.jpg",
                     "caption": txt, "parse_mode": "HTML", "reply_markup": kb})
-                asyncio.create_task(ensure_registered(session, from_user))
-                return
+                if r_photo.get("ok"):
+                    asyncio.create_task(ensure_registered(session, from_user))
+                    return   # ушло фото с приветствием и кнопками
+                # фото не ушло (Pages не обновился/файл большой) -> текстом ниже, не молчим
             except Exception:
                 pass  # фото не ушло — отправим текстом ниже
     await send_text(session, chat_id, txt, kb)
@@ -656,20 +791,27 @@ def _cache_user(from_user):
 
 
 async def ensure_registered(session, from_user):
-    """Любое сообщение от юзера -> он в users.json (каталог его увидит)."""
+    """Любое сообщение от юзера -> он в users.json. Кэш помнит зарегистрированных:
+    без чтения API на каждое сообщение. Локально в кэш кладём ТОЛЬКО после успешного коммита."""
     if not from_user or "id" not in from_user or not repo.enabled:
         return
-    _cache_user(from_user)
+    if any(u["id"] == from_user["id"] for u in _USERS_CACHE["users"]):
+        return
+    fu = from_user
+    def mut(d):
+        if any(u["id"] == fu["id"] for u in d["data/users.json"]["users"]):
+            return d
+        d["data/users.json"]["users"].append({
+            "id": fu["id"], "username": fu.get("username", ""),
+            "first": fu.get("first_name", ""), "ts": int(time.time())})
+        return d
     try:
-        users = await repo.get_json(session, "data/users.json", {"users": []}) or {"users": []}
-        if any(u["id"] == from_user["id"] for u in users.get("users", [])):
-            return
-        users.setdefault("users", []).append({
-            "id": from_user["id"], "username": from_user.get("username", ""),
-            "first": from_user.get("first_name", ""), "ts": int(time.time())})
-        await repo.commit_files(session, {
-            "data/users.json": json.dumps(users, ensure_ascii=False, indent=1).encode()},
-            f"bot: регистрация {from_user['id']}")
+        _, ok = await repo.update_jsons(session, {"data/users.json": {"users": []}},
+                                        mut, f"bot: регистрация {fu['id']}")
+        if ok:
+            _cache_user(fu)
+    except RepoError as e:
+        log.warning("регистрация %s отложена (сбой чтения, данные не тронуты): %s", fu["id"], e)
     except Exception:
         log.exception("регистрация упала")
 
@@ -681,16 +823,24 @@ async def handle_block(session, chat_id, from_id, arg):
     if not arg:
         await send_text(session, chat_id, "Формат: /block <uid или hash>")
         return
-    dl = await repo.get_json(session, "denylist.json", {"uids": [], "hashes": []}) or {"uids": [], "hashes": []}
-    dl.setdefault("uids", []); dl.setdefault("hashes", [])
-    if arg.isdigit():
-        dl["uids"].append(int(arg))
-    else:
-        dl["hashes"].append(arg)
-    dl["uids"] = sorted(set(dl["uids"])); dl["hashes"] = sorted(set(dl["hashes"]))
-    if repo.enabled:
-        await repo.commit_files(session, {
-            "denylist.json": json.dumps(dl, indent=1).encode()}, f"bot: block {arg}")
+    arg_ = arg
+    def mut(d):
+        dl = d["denylist.json"]
+        dl.setdefault("uids", []); dl.setdefault("hashes", [])
+        if arg_.isdigit():
+            dl["uids"].append(int(arg_))
+        else:
+            dl["hashes"].append(arg_)
+        dl["uids"] = sorted(set(dl["uids"])); dl["hashes"] = sorted(set(dl["hashes"]))
+        d["denylist.json"] = dl
+        return d
+    try:
+        _, ok = await repo.update_jsons(session, {"denylist.json": {"uids": [], "hashes": []}},
+                                        mut, f"bot: block {arg}")
+    except RepoError:
+        await send_text(session, chat_id, "Сервис перегружен, повтори через минуту.")
+        return
+    _DENY["ts"] = 0.0   # немедленный перечит после /block
     await send_text(session, chat_id, f"Заблокирован: {arg}")
 
 
@@ -783,6 +933,14 @@ POLL = {"ts": 0.0}  # время последнего успешного getUpda
 async def safe_process(session, upd):
     try:
         await process_update(session, upd)
+    except RepoError:
+        log.warning("update: GitHub API сбой")
+        try:
+            msg = upd.get("message") or {}
+            if msg.get("chat"):
+                await send_text(session, msg["chat"]["id"], "Сервис перегружен, повтори через минуту.")
+        except Exception:
+            pass
     except Exception:
         log.exception("update упал")
         try:
@@ -818,6 +976,21 @@ async def main():
             {"command": "myid", "description": "Мой Telegram ID"}]})
         log.info("меню и команды настроены, url=%s", app_url)
 
+        # разогрев LISTINGS: все листинги одним параллельным заходом (8 одновременных),
+        # первая публикация не ждёт последовательного чтения файлов всех юзеров
+        if repo.enabled:
+            try:
+                sem8 = asyncio.Semaphore(8)
+                async def warm(uid):
+                    async with sem8:
+                        LISTINGS[uid] = await repo.get_json(session, f"data/listings/{uid}.json") or {}
+                uids = [str(u["id"]) for u in await get_users_cached(session)]
+                res = await asyncio.gather(*[warm(u) for u in uids], return_exceptions=True)
+                errs = sum(1 for r in res if isinstance(r, Exception))
+                log.info("LISTINGS разогрет: %d файлов, %d ошибок", len(uids) - errs, errs)
+            except Exception:
+                log.exception("разогрев листингов упал (не критично)")
+
         async def poll():
             offset = None
             fail = 0
@@ -831,9 +1004,14 @@ async def main():
                         data = await r.json()
                     POLL["ts"] = time.time()  # живой proof: Telegram ответил
                     fail = 0
+                    tasks = []
                     for upd in data.get("result", []):
                         offset = upd["update_id"] + 1
-                        asyncio.create_task(safe_process(session, upd))
+                        tasks.append(asyncio.create_task(safe_process(session, upd)))
+                    if tasks:
+                        # только после обработки всей пачки подтверждаем offset:
+                        # краш -> Telegram передаёт апдейты заново, заказ не теряется
+                        await asyncio.gather(*tasks)
                 except asyncio.TimeoutError:
                     fail += 1
                     if fail >= 3:
@@ -849,8 +1027,7 @@ async def main():
 
         async def refresher():
             await asyncio.sleep(10)  # прогрев после старта
-            tick = 0
-            last_hb = 0.0
+            last_hb, last_hot, last_all = 0.0, 0.0, 0.0
             while True:
                 try:
                     # watchdog: getUpdates молчит > 5 минут -> бот «живой, но глухой».
@@ -858,19 +1035,20 @@ async def main():
                     if POLL["ts"] and time.time() - POLL["ts"] > 300:
                         log.critical("poll мёртв %.0fс, самоубийство для перезапуска", time.time() - POLL["ts"])
                         os._exit(7)
-                    # heartbeat раз в 5 мин (6 запросов GitHub API на коммит: 60с ели 360/ч из лимита 1000)
-                    if time.time() - last_hb > 300 and repo.enabled:
+                    # heartbeat раз в 15 мин (6 запросов GitHub API на коммит; было 60с = 360 req/h)
+                    if time.time() - last_hb > 900 and repo.enabled:
                         last_hb = time.time()
                         asyncio.create_task(repo.commit_files(session, {
                             "data/heartbeat.json": json.dumps({"ts": int(last_hb), "poll_ts": int(POLL["ts"] or 0)}).encode()}, "bot: heartbeat"))
-                    # горячие (писали недавно): каждые 2с, все остальные: каждые 10с
-                    if tick % 5 == 0:
-                        await refresh_all_users(session, hot_only=False)   # все: каждые ~10с
-                    else:
-                        await refresh_all_users(session, hot_only=True)    # активные: каждые ~2с
+                    # экономия Bot API: горячие (писали за 15 мин) каждые 30с, все остальные каждые 10 мин
+                    if time.time() - last_hot > 30:
+                        last_hot = time.time()
+                        await refresh_all_users(session, hot_only=True)
+                    if time.time() - last_all > 600:
+                        last_all = time.time()
+                        await refresh_all_users(session, hot_only=False)
                 except Exception:
                     log.exception("refresh упал")
-                tick += 1
                 await asyncio.sleep(2)
 
         POLL["ts"] = time.time()  # прогрев: 5 минут форы до первого watchdog-провера
