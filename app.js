@@ -1269,7 +1269,7 @@ async function init() {
 
 function autoPollMine() {
   const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
-  let _pollDelay = 15000, _hbAt = 0;
+  let _pollDelay = 15000, _hbAt = 0, _metaAt = 0;
   async function pollTick() {
     if (document.hidden) return true;
     // каталог: кто-то опубликовал/сменил цену -> обновляем ленту
