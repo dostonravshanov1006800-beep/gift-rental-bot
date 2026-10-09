@@ -18,6 +18,8 @@ import json
 import logging
 import os
 import time
+import html
+import re
 
 import aiohttp
 
@@ -62,6 +64,39 @@ async def send_text(session, chat_id, text, reply_markup=None):
     if reply_markup:
         payload["reply_markup"] = reply_markup
     return await tg_call(session, "sendMessage", payload)
+
+
+# ---------------------------------------------------------------- guard
+def h(s):
+    """HTML-escape динамических частей сообщений (send_text шлёт parse_mode=HTML)."""
+    return html.escape(str(s or ""), quote=False)
+
+
+def clean(s, n):
+    """Вырезать управляющие символы и HTML-знаки из пользовательской строки + лимит длины."""
+    return re.sub(r"[\x00-\x1f<>]", "", str(s or ""))[:n]
+
+
+_RATE: dict[str, float] = {}
+
+
+def rate_limited(uid, key, sec):
+    """Анти-спам: не чаще одного действия `key` на юзера за `sec` секунд."""
+    k = f"{uid}:{key}"
+    now = time.time()
+    if now - _RATE.get(k, 0) < sec:
+        return True
+    _RATE[k] = now
+    if len(_RATE) > 4096:
+        for x in list(_RATE)[:2048]:
+            _RATE.pop(x, None)
+    return False
+
+
+async def deny_blocked(session, uid):
+    """Проверить denylist.json: True если uid заблокирован."""
+    deny = await repo.get_json(session, "denylist.json", {"uids": []}) or {"uids": []}
+    return str(uid) in {str(x) for x in deny.get("uids", [])}
 
 
 # ---------------------------------------------------------------- gifts
@@ -186,8 +221,8 @@ async def ensure_keyboard(session, chat_id, from_user):
     base = f"https://{REPO_NAME.split('/')[0]}.github.io/{REPO_NAME.split('/')[-1]}/"
     url = f"{base}?u={uid}"
     await tg_call(session, "sendMessage", {
-        "chat_id": chat_id, "text": "Кнопки обновлены: «Маркет» и «Сдать подарок» внизу.",
-        "reply_markup": {"keyboard": [[{"text": "Маркет", "web_app": {"url": url + "&m=mkt"}},
+        "chat_id": chat_id, "text": "Кнопки обновлены: «Открыть» и «Сдать подарок» внизу.",
+        "reply_markup": {"keyboard": [[{"text": "Открыть", "web_app": {"url": url + "&m=mkt"}},
                                         {"text": "Сдать подарок", "web_app": {"url": url + "&m=pub"}}]],
                          "resize_keyboard": True, "is_persistent": True}})
 LAST_SEEN: dict[int, float] = {}
@@ -302,13 +337,19 @@ async def handle_publish(session, chat_id, from_id, obj):
     if str(obj.get("uid")) != str(from_id):
         await send_text(session, chat_id, "Отказано: uid не совпадает с твоим аккаунтом.")
         return
+    if await deny_blocked(session, from_id):
+        await send_text(session, chat_id, "Доступ ограничен.")
+        return
+    if rate_limited(from_id, "pub", 5):
+        await send_text(session, chat_id, "Не так часто: предыдущая публикация ещё обрабатывается.")
+        return
     real = await fetch_user_gifts(session, from_id)
     out, fake = [], []
     now = int(time.time())
-    for g in obj.get("gifts", []):
+    for g in (obj.get("gifts") or [])[:100]:
         r = find_gift(real, g.get("g"))
         if not r:
-            fake.append(str(g.get("g")))
+            fake.append(clean(g.get("g"), 24))
             continue
         out.append({
             "g": str(g.get("g")), "inst": r.get("inst", ""), "n": r.get("name", ""), "m": r.get("model", ""), "s": r.get("symbol", ""),
@@ -321,11 +362,11 @@ async def handle_publish(session, chat_id, from_id, obj):
     if fake:
         await send_text(session, chat_id, "Этих подарков нет в профиле, пропущены: " + ", ".join(fake))
     listing = {
-        "uid": str(from_id), "name": str(obj.get("name") or "")[:60],
-        "uname": str(obj.get("uname") or "")[:32],
-        "about": str(obj.get("about") or "")[:300],
-        "req": [{"l": str(r.get("l") or r.get("label") or "")[:30],
-                 "v": str(r.get("v") or r.get("value") or "")[:120]}
+        "uid": str(from_id), "name": clean(obj.get("name"), 60),
+        "uname": re.sub(r"[^A-Za-z0-9_]", "", str(obj.get("uname") or ""))[:32],
+        "about": clean(obj.get("about"), 300),
+        "req": [{"l": clean(r.get("l") or r.get("label"), 30),
+                 "v": clean(r.get("v") or r.get("value"), 120)}
                 for r in (obj.get("req") or [])[:6]],
         "gifts": out, "updated": now,
     }
@@ -343,8 +384,16 @@ async def handle_publish(session, chat_id, from_id, obj):
 # ---------------------------------------------------------------- orders
 async def handle_order(session, from_user, obj):
     """Клиент вставил пейлоад заказа: {o:1, lu, g, p, cur, per, c}."""
-    lu = str(obj.get("lu") or "")
-    gid = str(obj.get("g") or "")
+    if await deny_blocked(session, from_user.get("id")):
+        await send_text(session, from_user["id"], "Доступ ограничен.")
+        return
+    lu = clean(obj.get("lu"), 20)
+    gid = clean(obj.get("g"), 64)
+    coid = clean(obj.get("coid"), 64)
+    price = clean(obj.get("p"), 20)
+    cur = clean(obj.get("cur"), 5)
+    per = clean(obj.get("per"), 10)
+    comment = clean(obj.get("c"), 150)
     if not lu or not gid:
         await send_text(session, from_user["id"], "Заказ неполный: нет арендодателя или подарка.")
         return
@@ -365,21 +414,22 @@ async def handle_order(session, from_user, obj):
 
     orders = await repo.get_json(session, f"data/orders/{lu}.json", {"orders": [], "seq": 0}) \
         or {"orders": [], "seq": 0}
-    coid = str(obj.get("coid") or "")
     if coid:
         dup = next((o for o in orders.get("orders", []) if str(o.get("coid")) == coid), None)
         if dup:
             # дубль доставки (медленный телефон не пометил апп скрытым): молча пропускаем,
             # клиент и арендодатель уже получили уведомления, шум в чате не нужен
             return
+    if rate_limited(from_user.get("id"), "ord", 3):
+        # анти-спам: не чаще одного заказа на юзера в 3 секунды
+        await send_text(session, from_user["id"], "Предыдущий заказ ещё обрабатывается, подожди пару секунд.")
+        return
     seq = int(orders.get("seq") or 0) + 1
     orders["seq"] = seq
     orders.setdefault("orders", []).append({
         "id": str(seq), "coid": coid,
-        "gid": gid, "name": gift.get("name", ""), "num": gift.get("num"),
-        "price": str(obj.get("p") or ""), "cur": obj.get("cur") or "",
-        "per": obj.get("per") or "",
-        "comment": (obj.get("c") or "")[:150],
+        "gid": gid, "name": h(gift.get("name", "")), "num": gift.get("num"),
+        "price": price, "cur": cur, "per": per, "comment": comment,
         "client_uid": from_user["id"],
         "client_username": from_user.get("username", ""),
         "client_first": from_user.get("first_name", ""),
@@ -390,8 +440,8 @@ async def handle_order(session, from_user, obj):
     mine = await repo.get_json(session, f"data/my_orders/{from_user['id']}.json", {"orders": []}) \
         or {"orders": []}
     mine["orders"] = (mine.get("orders") or [])[-100:] + [{
-        "id": str(seq), "lu": lu, "name": gift.get("name", ""), "num": gift.get("num"),
-        "price": str(obj.get("p") or ""), "cur": obj.get("cur") or "", "per": obj.get("per") or "",
+        "id": str(seq), "lu": lu, "name": h(gift.get("name", "")), "num": gift.get("num"),
+        "price": price, "cur": cur, "per": per,
         "ts": int(time.time()), "status": "new",
         "owner_username": landlord.get("username", "")}]
 
@@ -404,19 +454,19 @@ async def handle_order(session, from_user, obj):
 
     cust = ("@" + from_user["username"]) if from_user.get("username") \
         else f"tg://user?id={from_user['id']}"
-    num_part = f" #{gift.get('num')}" if gift.get("num") not in (None, "") else ""
-    price_part = f"{obj.get('p')} {obj.get('cur','')} / {obj.get('per','')}" \
-        if obj.get("p") else "по договорённости"
+    num_part = f" #{h(str(gift.get('num')))}" if gift.get("num") not in (None, "") else ""
+    price_part = f"{price} {cur} / {per}" if price else "по договорённости"
     await send_text(session, int(lu),
         f"📦 <b>Новый заказ #{seq}</b>\n"
-        f"🎁 {gift.get('name','')}{num_part}\n"
+        f"🎁 {h(gift.get('name',''))}{num_part}\n"
         f"💰 {price_part}\n"
         f"👤 Клиент: {cust} (ID {from_user['id']})\n"
-        + (f"💬 {obj.get('c','')[:150]}\n" if obj.get("c") else "")
+        + (f"💬 {h(comment)}\n" if comment else "")
         + f"\nЦену клиент указал сам: сверься с витриной. Ответь клиенту, договорись о залоге и сроках.\n"
           f"/done {seq} — выполнен · /cancel {seq} — отмена")
 
-    who = ("@" + landlord["username"]) if landlord.get("username") else "арендодатель"
+    who = ("@" + re.sub(r"[^A-Za-z0-9_]", "", str(landlord.get("username") or ""))) \
+        if landlord.get("username") else "арендодатель"
     await send_text(session, from_user["id"],
         f"✅ Заказ #{seq} отправлен {who}. Он свяжется с тобой в Telegram.")
 
@@ -466,7 +516,7 @@ async def handle_order_status(session, from_id, oid, status):
     await send_text(session, from_id, f"Заказ #{oid}: {note}.")
     try:
         await send_text(session, int(it.get("client_uid")),
-            f"Заказ #{oid} ({it.get('name','')} #{it.get('num','')}) {note} арендодателем.")
+            f"Заказ #{h(str(oid))} ({h(it.get('name',''))} {h(str(it.get('num','')))}) {note} арендодателем.")
     except Exception:
         pass
 
@@ -561,19 +611,19 @@ async def handle_start(session, chat_id, from_user, args=""):
     # ответ СРАЗУ, без зависимости от GitHub. Один вход: нижние кнопки (только они дают sendData)
     base_url = f"https://{REPO_NAME.split('/')[0]}.github.io/{REPO_NAME.split('/')[-1]}/" if REPO_NAME else ""
     app_url = f"{base_url}?u={from_user['id']}&cb={int(time.time() // 3600)}" if base_url else ""
-    kb = {"keyboard": [[{"text": "Маркет", "web_app": {"url": app_url + "&m=mkt"}},
+    kb = {"keyboard": [[{"text": "Открыть", "web_app": {"url": app_url + "&m=mkt"}},
                         {"text": "Сдать подарок", "web_app": {"url": app_url + "&m=pub"}}]],
           "resize_keyboard": True, "is_persistent": True} if app_url else None
     _KB_SENT.add(from_user["id"])
     if args == "pub":
         txt = "Нажми «Сдать подарок» внизу: публикация завершится автоматически."
     elif args == "scan":
-        txt = "Профиль подключён ✅ Нажми «Маркет» внизу: твои подарки будут во вкладке «Профиль»."
+        txt = "Профиль подключён ✅ Нажми «Открыть» внизу: твои подарки будут во вкладке «Профиль»."
     elif args == "ord":
-        txt = "Нажми «Маркет» внизу: твой заказ дойдёт автоматически."
+        txt = "Нажми «Открыть» внизу: твой заказ дойдёт автоматически."
     else:
         txt = ("🎁 <b>Gift Rent</b>: аренда подарков Telegram.\n"
-               "Кнопки внизу: <b>Маркет</b> (арендовать) и <b>Сдать подарок</b> (разместить свой).\n"
+               "Кнопки внизу: <b>Открыть</b> (арендовать) и <b>Сдать подарок</b> (разместить свой).\n"
                "Условия и FAQ с фото-инструкциями: в приложении, вкладка «Профиль». Оплата P2P напрямую между пользователями.")
         if base_url:
             try:
@@ -750,7 +800,7 @@ async def main():
         if app_url:
             # кнопка мини-аппа слева от поля ввода: основной быстрый вход в Маркет
             await tg_call(session, "setChatMenuButton", {"menu_button": {
-                "type": "web_app", "text": "Маркет", "web_app": {"url": app_url + "?src=menu&m=mkt"}}})
+                "type": "web_app", "text": "Открыть", "web_app": {"url": app_url + "?src=menu&m=mkt"}}})
         await tg_call(session, "setMyCommands", {"commands": [
             {"command": "start", "description": "Открыть маркетплейс"},
             {"command": "orders", "description": "Мои входящие заказы"},

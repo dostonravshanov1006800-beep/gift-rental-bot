@@ -601,7 +601,7 @@ function renderOrders() {
       </div>`).join("") : `<div class="empty"><b>${t("e_noorders")}</b>${S.ordersSeg === "in" ? t("e_noorders_in") : t("e_noorders_out")}</div>`}
     ${S.ordersSeg === "in" && list.length ? `<div class="hint">${t("hint_orders")}</div>` : ""}`;
   $$("[data-s]").forEach((b) => b.onclick = () => { S.ordersSeg = b.dataset.s; renderOrders(); });
-  $$("[data-w]").forEach((b) => b.onclick = () => openTg(`https://t.me/${b.dataset.w}`));
+  $$("[data-w]").forEach((b) => b.onclick = () => openTg(`https://t.me/${String(b.dataset.w || "").replace(/[^A-Za-z0-9_]/g, "")}`));
   $$("[data-cmd]").forEach((b) => b.onclick = async () => { await copy(b.dataset.cmd); haptic("ok"); toast(t("t_cmdcopy")); setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}`), 500); });
 }
 
