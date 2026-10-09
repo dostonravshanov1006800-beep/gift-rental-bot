@@ -139,64 +139,70 @@ async def fetch_user_gifts(session, user_id) -> list[dict]:
     _seen: dict[str, int] = {}
     try:
         for _ in range(20):
+            api = next(_scan_rr)
             data = await tg_call(session, "getUserGifts",
                                  {"user_id": int(user_id), "offset": offset, "limit": 100},
-                                 api=next(_scan_rr))
+                                 api=api)
+            if not data.get("ok") and api != API:
+                # failover: второй клиент сломался (токен отозван / 429 / сеть) -> сразу основной
+                log.warning("scan client #2 failed (%s), fallback to main", data.get("description"))
+                data = await tg_call(session, "getUserGifts",
+                                     {"user_id": int(user_id), "offset": offset, "limit": 100})
             if not data.get("ok"):
                 raise GiftsFetchError(f"{user_id}: {data.get('description')}")
-        res = data["result"]
-        for g in res.get("gifts", []):
-            if g.get("is_burned"):
-                continue
-            if g.get("type") != "unique":
-                # обычный / коллекционный: имя = эмодзи, без модели и фона
-                u = g.get("gift", {})
-                st = u.get("sticker", {}) or {}
-                thumb = st.get("thumbnail", {}) or {}
-                base = u.get("id") or ""
-                _seen[base] = _seen.get(base, 0) + 1
-                inst = str(g.get("owned_gift_id") or "") or f"i{_seen[base]}"
-                gifts.append({
-                    "gid": base,
-                    "inst": inst,
-                    "name": u.get("title") or st.get("emoji") or "",
-                    "uniq": "", "num": None,
-                    "model": "", "symbol": "", "backdrop": "",
-                    "cc": None, "ec": None, "mr": None, "sr": None, "br": None,
-                    "th_fuid": thumb.get("file_unique_id"),
-                    "th_fid": thumb.get("file_id"),
-                    "p": g.get("type"), "stars": u.get("star_count"),
-                })
-                continue
-            if True:
-                u = g.get("gift", {})
-                model = u.get("model", {})
-                symbol = u.get("symbol", {})
-                backdrop = u.get("backdrop", {})
-                colors = backdrop.get("colors", {})
-                st = model.get("sticker", {}) or {}
-                thumb = st.get("thumbnail", {}) or {}
-                base = u.get("name") or f"{u.get('gift_id')}#{u.get('number')}"
-                _seen[base] = _seen.get(base, 0) + 1
-                inst = str(g.get("owned_gift_id") or "") or f"i{_seen[base]}"
-                gifts.append({
-                    "gid": base,
-                    "inst": inst,
-                    "name": u.get("base_name", ""),
-                    "uniq": u.get("name", ""),
-                    "num": u.get("number"),
-                    "model": model.get("name", ""),
-                    "symbol": symbol.get("name", ""),
-                    "backdrop": backdrop.get("name", ""),
-                    "cc": colors.get("center_color"),
-                    "ec": colors.get("edge_color"),
-                    "mr": model.get("rarity_per_mille"),
-                    "sr": symbol.get("rarity_per_mille"),
-                    "br": backdrop.get("rarity_per_mille"),
-                    "th_fuid": thumb.get("file_unique_id"),
-                    "th_fid": thumb.get("file_id"),
-                    "p": "unique",
-                })
+            res = data["result"]
+            for g in res.get("gifts", []):
+                if g.get("is_burned"):
+                    continue
+                if g.get("type") != "unique":
+                    # обычный / коллекционный: имя = эмодзи, без модели и фона
+                    u = g.get("gift", {})
+                    st = u.get("sticker", {}) or {}
+                    thumb = st.get("thumbnail", {}) or {}
+                    base = u.get("id") or ""
+                    _seen[base] = _seen.get(base, 0) + 1
+                    inst = str(g.get("owned_gift_id") or "") or f"i{_seen[base]}"
+                    gifts.append({
+                        "gid": base,
+                        "inst": inst,
+                        "name": u.get("title") or st.get("emoji") or "",
+                        "uniq": "", "num": None,
+                        "model": "", "symbol": "", "backdrop": "",
+                        "cc": None, "ec": None, "mr": None, "sr": None, "br": None,
+                        "th_fuid": thumb.get("file_unique_id"),
+                        "th_fid": thumb.get("file_id"),
+                        "p": g.get("type"), "stars": u.get("star_count"),
+                    })
+                    continue
+                if True:
+                    u = g.get("gift", {})
+                    model = u.get("model", {})
+                    symbol = u.get("symbol", {})
+                    backdrop = u.get("backdrop", {})
+                    colors = backdrop.get("colors", {})
+                    st = model.get("sticker", {}) or {}
+                    thumb = st.get("thumbnail", {}) or {}
+                    base = u.get("name") or f"{u.get('gift_id')}#{u.get('number')}"
+                    _seen[base] = _seen.get(base, 0) + 1
+                    inst = str(g.get("owned_gift_id") or "") or f"i{_seen[base]}"
+                    gifts.append({
+                        "gid": base,
+                        "inst": inst,
+                        "name": u.get("base_name", ""),
+                        "uniq": u.get("name", ""),
+                        "num": u.get("number"),
+                        "model": model.get("name", ""),
+                        "symbol": symbol.get("name", ""),
+                        "backdrop": backdrop.get("name", ""),
+                        "cc": colors.get("center_color"),
+                        "ec": colors.get("edge_color"),
+                        "mr": model.get("rarity_per_mille"),
+                        "sr": symbol.get("rarity_per_mille"),
+                        "br": backdrop.get("rarity_per_mille"),
+                        "th_fuid": thumb.get("file_unique_id"),
+                        "th_fid": thumb.get("file_id"),
+                        "p": "unique",
+                    })
             offset = res.get("next_offset")
             if not offset:
                 break
