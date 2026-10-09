@@ -13,6 +13,7 @@ data/users.json, data/gifts/<uid>.json, denylist.json, data/complaints.json.
 """
 import asyncio
 import base64
+import itertools
 import hashlib
 import json
 import logging
@@ -43,6 +44,12 @@ ADMIN_IDS = {x for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split("
 
 REFRESH_INTERVAL = 45  # сек, цикл обновления подарков
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+# второй бот-сканер (@free_gifte_bot): getUserGifts работает с любым токеном,
+# round-robin удваивает пропускную способность скана и даёт failover.
+# Токен живёт ТОЛЬКО в secrets/env серверной части, в публичный JS не попадает.
+SCAN2_TOKEN = os.environ.get("SCAN2_TOKEN", "")
+_scan_apis = [API] + ([f"https://api.telegram.org/bot{SCAN2_TOKEN}"] if SCAN2_TOKEN else [])
+_scan_rr = itertools.cycle(_scan_apis)
 
 repo = Repo(GH_TOKEN or None, REPO_NAME or None)
 priv_key = signing.load_private(SIGNING_KEY_PEM) if SIGNING_KEY_PEM else None
@@ -57,8 +64,8 @@ def b64url_decode(s: str) -> bytes:
     return base64.b64decode(s)
 
 
-async def tg_call(session, method, payload=None):
-    async with session.post(f"{API}/{method}", json=payload or {}) as r:
+async def tg_call(session, method, payload=None, api=None):
+    async with session.post(f"{api or API}/{method}", json=payload or {}) as r:
         data = await r.json()
         if not data.get("ok"):
             log.warning("%s -> %s", method, data)
@@ -133,7 +140,8 @@ async def fetch_user_gifts(session, user_id) -> list[dict]:
     try:
         for _ in range(20):
             data = await tg_call(session, "getUserGifts",
-                                 {"user_id": int(user_id), "offset": offset, "limit": 100})
+                                 {"user_id": int(user_id), "offset": offset, "limit": 100},
+                                 api=next(_scan_rr))
             if not data.get("ok"):
                 raise GiftsFetchError(f"{user_id}: {data.get('description')}")
         res = data["result"]

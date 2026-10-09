@@ -412,18 +412,77 @@ select.inp { appearance: none; -webkit-appearance: none; }
 .faq-img{display:block;width:100%;margin:10px 0 2px;border-radius:10px;border:1px solid var(--line)}
 
 /* ============================
- * Светлая тема (html.light) + настройки
+ * Instagram-дизайн (html.light) — основная тема по умолчанию
+ * Белый фон, #262626 текст, #dbdbdb hairlines, #0095f6 акцент, сторис-градиент
  * ============================ */
 html.light {
-  --bg: #f2f4f8; --bg-elev: #ffffff; --bg-card: #ffffff; --bg-input: #e9edf3;
-  --line: rgba(15, 20, 35, .08); --line-strong: rgba(15, 20, 35, .14);
-  --text: #14171f; --muted: #5b6373; --dim: #8a92a4;
-  --accent-glow: rgba(61, 139, 253, .22);
+  --bg: #ffffff; --bg-elev: #ffffff; --bg-card: #ffffff; --bg-input: #efefef;
+  --line: rgba(0, 0, 0, .09); --line-strong: #dbdbdb;
+  --text: #262626; --muted: #8e8e8e; --dim: #c0c0c0;
+  --accent: #0095f6; --accent-2: #0095f6; --accent-glow: rgba(0, 149, 246, .28);
+  --danger: #ed4956; --ok: #12a150; --warn: #f5a623;
 }
-html.light .p-about { color: var(--muted); }
-html.light .gcanvas { box-shadow: 0 18px 40px -14px var(--c2, rgba(0,0,0,.25)), inset 0 0 0 1px rgba(15,20,35,.06); }
-html.light .dcanvas { box-shadow: 0 18px 40px -14px var(--c2, rgba(0,0,0,.25)), inset 0 0 0 1px rgba(15,20,35,.06); }
-html.light .btn.busy::after { border-color: rgba(255,255,255,.55); }
+/* скелетоны: серый Instagram-шиммер вместо тёмного градиента */
+html.light .skeleton, html.light .sk { background: linear-gradient(100deg, #efefef 30%, #e3e3e3 50%, #efefef 70%); background-size: 300% 100%; }
+html.light .sk-block, html.light .sk-line { background: linear-gradient(100deg, #efefef 40%, #e0e0e0 50%, #efefef 60%); background-size: 200% 100%; }
+/* топбар и таббар: белые, hairline, без тёмного стекла */
+html.light .topbar { background: rgba(255, 255, 255, .92); border-bottom: 1px solid var(--line-strong); }
+html.light .tabbar { background: rgba(255, 255, 255, .96); border-top: 1px solid var(--line-strong); }
+html.light .tab { color: #b0b0b0; }
+html.light .tab.active { color: #262626; }
+html.light .tab.active svg { stroke: #262626; stroke-width: 2.1; }
+html.light .tab.active::before { display: none; }  /* у Instagram нет индикатора: активная вкладка чёрная */
+html.light .tab .dot { box-shadow: 0 0 0 2px #fff; }
+/* поиск: серая пилюля без рамки */
+html.light .search { background: var(--bg-input); border-color: transparent; }
+html.light .search:focus-within { box-shadow: none; }
+html.light .search svg { stroke: #8e8e8e; }
+/* чипы: активный = чёрная пилюля Instagram */
+html.light .chip.on { background: #262626; border-color: #262626; color: #fff; }
+/* карточки: белые с hairline, лёгкая тень на нажатии */
+html.light .gcard { border-color: var(--line-strong); }
+html.light .gcanvas { box-shadow: none; }
+html.light .ginfo { min-height: 84px; }
+/* профиль: сторис-градиент аватара, без свечения */
+html.light .avatar { background: conic-gradient(from 200deg, #feda75, #fa7e1e, #d62976, #962fbf, #4f5bd5, #feda75); box-shadow: none; }
+html.light .avatar > div { border-color: #fff; background: #fff; }
+html.light .p-about { color: var(--text); }
+/* кнопки: плоский #0095f6, без градиента и глоу */
+html.light .btn { background: #0095f6; box-shadow: none; }
+html.light .btn:active { box-shadow: none; }
+html.light .btn.sec { background: #fff; border: 1px solid var(--line-strong); }
+html.light .btn.out { border: 1px solid var(--line-strong); }
+html.light .btn.danger { border: 1px solid rgba(237, 73, 86, .45); }
+html.light .btn.busy::after { border-color: rgba(255, 255, 255, .55); }
+html.light #gadd { background: #0095f6; box-shadow: 0 8px 20px -8px rgba(0, 149, 246, .55); }
+/* поля ввода: светло-серые, фокус — рамка #0095f6 */
+html.light .field input, html.light .field textarea, html.light .field select, html.light .inp { border-color: transparent; background: var(--bg-input); }
+html.light .field input:focus, html.light .field textarea:focus, html.light .field select:focus, html.light .inp:focus { box-shadow: none; border-color: #b8dffb; }
+html.light .ritem .del { background: var(--bg-input); border-color: transparent; }
+/* свитч: iOS-стиль, включён = #0095f6 */
+html.light .switch i { background: rgba(0, 0, 0, .18); }
+html.light .switch input:checked + i { background: #0095f6; }
+/* сегменты (заказы, язык, тема): iOS segmented */
+html.light .seg { background: var(--bg-input); border-color: transparent; }
+html.light .seg button.on { background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .18); }
+html.light .seg.mini button.on { background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .16); }
+/* нижний лист: белый, радиус 16 */
+html.light .sheet { background: #fff; box-shadow: 0 -12px 40px rgba(0, 0, 0, .14); border-top-color: transparent; }
+html.light .sheet-x { background: var(--bg-input); }
+html.light .overlay { background: rgba(0, 0, 0, .45); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
+html.light .dcanvas { box-shadow: 0 14px 30px -12px var(--c2, rgba(0,0,0,.3)), inset 0 0 0 1px rgba(0, 0, 0, .05); }
+/* статусы заказов/бейджи: приглушённые Instagram-подложки */
+html.light .ost.new { color: #0095f6; background: rgba(0, 149, 246, .1); }
+html.light .ost.done { color: #12a150; background: rgba(18, 161, 80, .1); }
+html.light .ost.cancelled { color: #ed4956; background: rgba(237, 73, 86, .1); }
+html.light .vbadge.ok { background: rgba(18, 161, 80, .1); }
+html.light .vbadge.warn { background: rgba(245, 166, 35, .1); }
+html.light .vbadge.bad { background: rgba(237, 73, 86, .1); }
+html.light .toast { background: rgba(16, 16, 16, .92); border-color: transparent; box-shadow: 0 8px 24px rgba(0, 0, 0, .18); }
+html.light .rlink { color: #0095f6; }
+html.light ::selection { background: rgba(0, 149, 246, .22); }
+html.light .owner .oav { background: var(--bg-input); }
+html.light .spin { border-color: var(--line-strong); }
 
 .setcard { padding: 6px 14px; }
 .setrow { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--line); }

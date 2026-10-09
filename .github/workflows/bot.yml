@@ -44,6 +44,7 @@ jobs:
         if: steps.guard.outputs.skip == 'false'
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          SCAN2_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN_2 }}
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
           ADMIN_IDS: ${{ secrets.ADMIN_IDS }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT || github.token }}   # PAT даёт 5000 req/h; пока его нет - дефолт 1000, расход снижен до ~85/h

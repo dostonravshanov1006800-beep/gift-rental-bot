@@ -16,7 +16,7 @@ const CURRENCIES = ["UZS", "RUB", "USD", "USDT", "TON"];
 
 const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
 if (tg) {
-  try { tg.ready(); tg.expand(); tg.setHeaderColor && tg.setHeaderColor("#0e1015"); tg.setBackgroundColor && tg.setBackgroundColor("#0e1015"); } catch (e) {}
+  try { tg.ready(); tg.expand(); } catch (e) {}
 }
 
 /* ============================================================
@@ -134,7 +134,7 @@ function parseTgUserLive() {
 const S = {
   tab: "market",
   lang: (function () { try { return localStorage.getItem("gr_lang") || "ru"; } catch (e) { return "ru"; } })(),
-  theme: (function () { try { return localStorage.getItem("gr_theme") || "auto"; } catch (e) { return "auto"; } })(),
+  theme: (function () { try { return localStorage.getItem("gr_theme") || "light"; } catch (e) { return "light"; } })(),
   uid: tgUser ? String(tgUser.id) : "0",
   user: tgUser,
   profile: { name: "", about: "", uname: "", sell: "", sellCur: "UZS", req: [] },
@@ -370,9 +370,11 @@ function setLang(l) {
   $$("[data-i18n]").forEach((el) => { const v = I18N[S.lang][el.dataset.i18n] || I18N.ru[el.dataset.i18n]; if (v) el.textContent = v; });
 }
 function applyTheme() {
-  const eff = S.theme === "auto" ? (tg && tg.colorScheme === "light" ? "light" : "dark") : (S.theme || "dark");
+  const eff = S.theme === "auto" ? (tg && tg.colorScheme === "light" ? "light" : "dark") : (S.theme || "light");
   document.documentElement.classList.toggle("light", eff === "light");
-  try { const m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute("content", eff === "light" ? "#f2f4f8" : "#0e1015"); } catch (e) {}
+  const col = eff === "light" ? "#ffffff" : "#0e1015";
+  try { const m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute("content", col); } catch (e) {}
+  try { tg.setHeaderColor && tg.setHeaderColor(col); tg.setBackgroundColor && tg.setBackgroundColor(col); } catch (e) {}
 }
 function setTheme(th) {
   S.theme = ["auto", "dark", "light"].includes(th) ? th : "auto";
