@@ -9,7 +9,6 @@ const CONFIG = {
   profileKey: "gr_profile_v3",
   termsKey: "gr_terms_v3",
   favKey: "gr_fav_v3",
-  scanToken: "8853140164:AAEgXsHJY-JjR3lPvJ2JBQjnW-goFebgzIU", // токен скан-бота @free_gifte_bot: только getUserGifts/getFile (утечка безвредна)
   verifyKey: {"kty":"EC","crv":"P-256","x":"GQ1mE9ZzXYcYxW6yLoBD3lzMYOpQd60ntJgUPdY7nLo","y":"5JBfRbOwbZD4bb1yEutCIQeFw3eB7inih9agTkGLs3g","key_ops":["verify"],"ext":true},
 };
 const PERIODS = ["час", "день", "неделя", "месяц"];
@@ -611,13 +610,6 @@ function renderOrders() {
 function termFor(g) { return S.terms[ikey(g)] || S.terms[g.gid] || {}; }  // читаем с фолбэком на старые ключи
 function myListedCount() { return Array.isArray(S.myGifts) ? S.myGifts.filter((g) => (termFor(g)).on).length : 0; }
 
-async function startLiveScan() {
-  if (!CONFIG.scanToken || S.uid === "0") return;
-  const changed = await liveScan(S.uid);
-  if (S.tab === "profile") { if (changed) renderProfile(); else drawScanState(); }
-}
-setInterval(() => { if (!document.hidden && S.tab === "profile") startLiveScan(); }, 5000);
-
 function renderProfile() {
   const u = S.user || {};
   const name = S.profile.name || [u.first_name, u.last_name].filter(Boolean).join(" ") || t("p_user");
@@ -670,7 +662,6 @@ function renderProfile() {
     if (S.uid === "0") { const ok = await applyTgUser(); if (!ok) { toast(t("t_openlogin")); setTimeout(() => openTg(`https://t.me/${CONFIG.botUsername}?start=login`), 400); } return; }
     await copy(S.uid); haptic("ok"); toast(t("t_idcopied"));
   };
-  startLiveScan();
   $$("#thseg button").forEach((b) => b.onclick = () => { setTheme(b.dataset.th); render(); });
   $$("#langseg button").forEach((b) => b.onclick = () => { setLang(b.dataset.l); render(); });
   $("#edit").onclick = openEdit;
@@ -698,20 +689,11 @@ function markScanAsked() { try { localStorage.setItem("gr_scanask_v1", S.uid); }
 function drawScanState() {
   const el = $("#scanstate"); if (!el) return;
   if (S.uid === "0") { el.innerHTML = ``; return; }
-  if (CONFIG.scanToken) {
-    if (!S.liveTs && !S.liveFail) { el.innerHTML = `<span class="spin"></span>${t("scan_scan")}`; return; }
-    if (S.liveTs) {
-      const age = Math.max(0, Math.round((Date.now() - S.liveTs) / 1000));
-      el.innerHTML = `<i class="dot-live"></i>${t("scan_now")}${age < 5 ? "" : " " + t("scan_ago", { n: age })}`;
-      return;
-    }
-    // live-скан не удался (юзер не подключал скан-бота): показываем repo-статус ниже
-  }
   if (S.myGifts === "pending") { el.innerHTML = `<span class="spin"></span>Сканирую профиль Telegram…`; return; }
   if (!Array.isArray(S.myGifts)) { el.innerHTML = ``; return; }
   // бот сканирует профиль каждые 2-10с; штамп подарков меняется только при изменении, поэтому живость берём из heartbeat
   const hbAge = S.hb ? Math.round(Date.now() / 1000 - S.hb) : null;
-  el.innerHTML = hbAge != null && hbAge < 150
+  el.innerHTML = hbAge != null && hbAge < 330
     ? `<i class="dot-live"></i>${t("scan_sync")}`
     : `<i class="dot-off"></i>${t("scan_boot")}`;
 }
@@ -723,17 +705,17 @@ function drawMine() {
   if (!list.length) {
     // скелетоны только пока НЕТ ни одного ответа: репо-скан основного бота уже ответил (даже пустым) или скан-бот отказал, значит ждать нечего
     const repoAnswered = Array.isArray(S.myGifts);
-    const scanning = ((!S.liveTs && !S.liveFail && !repoAnswered) || S.myGifts === "pending") && !S._scanGaveUp;
+    const scanning = (S.myGifts === "pending" || !repoAnswered) && !S._scanGaveUp;
     if (scanning) {
       box.innerHTML = Array.from({ length: 3 }, () => `<div class="lrow skl"><div class="lthumb sk-block"></div><div class="lmeta"><b class="sk-line w60"></b><span class="sk-line w40"></span></div></div>`).join("");
       // одноразовый таймер: если скан затянулся, показываем CTA (без циклов перерисовки)
-      if (!S._scanTmr) S._scanTmr = setTimeout(() => { if (mergeGifts().length) return; if (S.myGifts === "pending" || (CONFIG.scanToken && !S.liveTs && !mergeGifts().length)) { S._scanTmr = 0; S._scanGaveUp = true; drawMine(); } }, 7000);
+      if (!S._scanTmr) S._scanTmr = setTimeout(() => { if (mergeGifts().length) { S._scanTmr = 0; return; } if (!repoAnswered || S.myGifts === "pending") { S._scanTmr = 0; S._scanGaveUp = true; drawMine(); } }, 7000);
       return;
     }
     const fresh = S.myGiftsUpd && (Date.now() / 1000 - S.myGiftsUpd) < 120;
     box.innerHTML = fresh
       ? `<div class="empty"><b>${t("e_nogifts")}</b>${t("e_gifts2")}<span class="hint">${t("e_gifts3")}</span></div>`
-      : scanAsked() || S.liveTs
+      : scanAsked()
         ? `<div class="empty"><b>${t("e_notfound")}</b>${t("e_nf2")}</div>`
         : `<div class="empty"><b>${t("e_scan")}</b>${t("e_scan2")}<button class="btn" id="scancta">${t("b_scan")}</button></div>`;
     const cta = $("#scancta");
@@ -1121,93 +1103,15 @@ async function shareShowcase() {
   await copy(link); haptic("ok"); toast(t("t_showcase"));
 }
 
-/* ============================================================
- * Прямой скан профиля: getUserGifts из клиента (любой юзер, без /start)
- * ============================================================ */
-let _scanBusy = false, _scanTs = 0, _fileCache = JSON.parse(localStorage.getItem("gr_filecache") || "{}");
-
-async function tgApi(method, params) {
-  const q = new URLSearchParams({ ...params }).toString();
-  try {
-    const r = await fetch(`https://api.telegram.org/bot${CONFIG.scanToken}/${method}?${q}`);
-    const d = await r.json();
-    return d && d.ok ? d.result : null;
-  } catch (e) { return null; }
-}
-
-async function liveScan(uid) {
-  if (!CONFIG.scanToken || uid === "0" || _scanBusy) return false;
-  if (!S._forceScan && Date.now() - _scanTs < 4000) return false;
-  S._forceScan = false;
-  _scanBusy = true; _scanTs = Date.now();
-  try {
-    const gifts = []; let offset = ""; let first = true;
-    for (let i = 0; i < 20; i++) {
-      const res = await tgApi("getUserGifts", { user_id: uid, offset, limit: 100 });
-      if (!res) { if (first) S.liveFail = true; break; }
-      first = false; S.liveFail = false;
-      for (const g of (res.gifts || [])) {
-        if (g.is_burned) continue;
-        const u = g.gift || {};
-        if (g.type !== "unique") {
-          const stk = u.sticker || {};
-          const st = stk.thumbnail || {};
-          gifts.push({ gid: u.id || "", inst: String(g.owned_gift_id || ""), name: u.title || stk.emoji || "", num: null,
-            model: "", symbol: "", backdrop: "", cc: null, ec: null, mr: null, sr: null, br: null,
-            th_fuid: st.file_unique_id, th_fid: st.file_id, p: g.type, stars: u.star_count });
-          continue;
-        }
-        const model = u.model || {}, symbol = u.symbol || {}, backdrop = u.backdrop || {};
-        const colors = backdrop.colors || {};
-        const thumb = ((model.sticker || {}).thumbnail) || {};
-        gifts.push({ gid: u.name || `${u.gift_id}#${u.number}`, inst: String(g.owned_gift_id || ""), name: u.base_name || "",
-          uniq: u.name || "", num: u.number,
-          model: model.name || "", symbol: symbol.name || "", backdrop: backdrop.name || "",
-          cc: colors.center_color, ec: colors.edge_color,
-          mr: model.rarity_per_mille, sr: symbol.rarity_per_mille, br: backdrop.rarity_per_mille,
-          th_fuid: thumb.file_unique_id, th_fid: thumb.file_id, p: "unique" });
-      }
-      offset = res.next_offset;
-      if (!offset) break;
-    }
-    const key = (l) => l.map((g) => g.gid + "#" + g.num).sort().join("|");
-    const changed = !Array.isArray(S.liveGifts) || key(gifts) !== key(S.liveGifts);
-    if (gifts.length) {
-      S.liveGifts = gifts; S.liveTs = Date.now(); S.liveFail = false;
-      try { localStorage.setItem("gr_filecache", JSON.stringify(_fileCache)); } catch (e) {}
-    }
-    return changed;
-  } finally { _scanBusy = false; }
-}
-
 // прямая ссылка на стикер: getFile + file path (через скан-бот); дедупликация одновременных запросов
-const _inflight = {};
-async function thumbUrl(g) {
-  if (g._t) return g._t;
-  if (g.th_fuid && _fileCache[g.th_fuid]) return g._t = _fileCache[g.th_fuid];
-  if (!CONFIG.scanToken || !g.th_fid) return null;
-  if (g.th_fuid && _inflight[g.th_fuid]) return _inflight[g.th_fuid];
-  const p = (async () => {
-    const r = await tgApi("getFile", { file_id: g.th_fid });
-    if (!r || !r.file_path) return null;
-    const url = `https://api.telegram.org/file/bot${CONFIG.scanToken}/${r.file_path}`;
-    if (g.th_fuid) _fileCache[g.th_fuid] = url;
-    return url;
-  })();
-  if (g.th_fuid) { _inflight[g.th_fuid] = p; try { const u = await p; if (u) g._t = u; } finally { delete _inflight[g.th_fuid]; } return g._t || await p; }
-  return p;
-}
+// превью приходит из репо (бот скачивает стикеры в assets/); клиентский fetch больше не нужен
+async function thumbUrl(g) { return g._t || g.t || null; }
 
 // уникальный ключ экземпляра: gid#inst. Одинаковые подарки = отдельные строки, каждый со своей ценой
 function ikey(g) { return g.gid + (g.inst ? "#" + g.inst : ""); }
 function mergeGifts() {
-  // прямой скан приоритетнее: он свежее репо-данных
-  const live = S.liveGifts;
-  let src = (!Array.isArray(live) || !live.length) ? (Array.isArray(S.myGifts) ? S.myGifts : []) : (() => {
-    const byIid = {};
-    (Array.isArray(S.myGifts) ? S.myGifts : []).forEach((g) => { byIid[ikey(g)] = g; });
-    return live.map((g) => { const repo = byIid[ikey(g)]; return repo && repo.t ? { ...g, t: repo.t } : g; });
-  })();
+  // подарки приходит из репо: бот сканирует каждые 2-10с и коммитит изменения
+  let src = Array.isArray(S.myGifts) ? S.myGifts : [];
   src = src.map((g) => ({ ...g }));  // копии, чтобы не мутировать исходники
   // у дублей без inst назначаем синтетические i1,i2,... — каждая копия отдельно, порядок стабилен
   const seen = {};
@@ -1349,8 +1253,7 @@ function autoPollMine() {
   const onback = async () => {
     if (document.hidden) return;
     // вернулись из бота (нажал Start / подключил сканер): мгновенный перескан, прошлые отказы не считаются
-    S._forceScan = true; S.liveFail = false; S._scanGaveUp = false; S._scanTmr = 0;
-    startLiveScan();
+    S._scanGaveUp = false; S._scanTmr = 0;
     await Promise.all([loadCatalog(), loadMine(), loadOrders()]); render();
   };
   window.addEventListener("pageshow", onback);

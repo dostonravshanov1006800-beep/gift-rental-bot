@@ -254,7 +254,7 @@ async def maybe_touch_user(session, uid, force=False):
 _USERS_CACHE: dict = {"ts": 0.0, "users": []}
 
 
-async def get_users_cached(session, max_age=20):
+async def get_users_cached(session, max_age=300):
     """Список юзеров из памяти; GitHub API дёргаем раз в max_age с, а не на каждый тик скана."""
     now = time.time()
     if now - _USERS_CACHE["ts"] > max_age or not _USERS_CACHE["users"]:
@@ -445,9 +445,10 @@ async def handle_order(session, from_user, obj):
         "ts": int(time.time()), "status": "new",
         "owner_username": landlord.get("username", "")}]
 
+    saved = False
     if repo.enabled:
-        # один атомарный коммит: и файл арендодателя, и копия клиента
-        await repo.commit_files(session, {
+        # один атомарный коммит: и файл арендодателя, и копия клиента. Без записи заказ не существует.
+        saved = await repo.commit_files(session, {
             f"data/orders/{lu}.json": json.dumps(orders, ensure_ascii=False, indent=1).encode(),
             f"data/my_orders/{from_user['id']}.json": json.dumps(mine, ensure_ascii=False).encode()},
             f"bot: заказ #{seq} для {lu}")
@@ -456,19 +457,29 @@ async def handle_order(session, from_user, obj):
         else f"tg://user?id={from_user['id']}"
     num_part = f" #{h(str(gift.get('num')))}" if gift.get("num") not in (None, "") else ""
     price_part = f"{price} {cur} / {per}" if price else "по договорённости"
-    await send_text(session, int(lu),
+    notified = (await send_text(session, int(lu),
         f"📦 <b>Новый заказ #{seq}</b>\n"
         f"🎁 {h(gift.get('name',''))}{num_part}\n"
         f"💰 {price_part}\n"
         f"👤 Клиент: {cust} (ID {from_user['id']})\n"
         + (f"💬 {h(comment)}\n" if comment else "")
         + f"\nЦену клиент указал сам: сверься с витриной. Ответь клиенту, договорись о залоге и сроках.\n"
-          f"/done {seq} — выполнен · /cancel {seq} — отмена")
+          f"/done {seq} — выполнен · /cancel {seq} — отмена")).get("ok", False)
 
     who = ("@" + re.sub(r"[^A-Za-z0-9_]", "", str(landlord.get("username") or ""))) \
         if landlord.get("username") else "арендодатель"
-    await send_text(session, from_user["id"],
-        f"✅ Заказ #{seq} отправлен {who}. Он свяжется с тобой в Telegram.")
+    # честный ответ клиенту: успех = заказ записан И арендодатель уведомлён
+    if saved and notified:
+        await send_text(session, from_user["id"],
+            f"✅ Заказ #{seq} отправлен {who}. Он свяжется с тобой в Telegram.")
+    elif saved and not notified:
+        await send_text(session, from_user["id"],
+            f"⚠️ Заказ #{seq} сохранён, но уведомление {who} не доставлено (возможно, бот у него заблокирован). "
+            f"Напиши ему сам: {who}.")
+    else:
+        await send_text(session, from_user["id"],
+            "⚠️ Заказ не сохранился: проблема с хранилищем, Telegram повторит доставку через минуту. "
+            "Если через 5 минут не придёт подтверждение — отправь заказ ещё раз.")
 
 
 async def handle_orders_list(session, from_id):
@@ -847,8 +858,8 @@ async def main():
                     if POLL["ts"] and time.time() - POLL["ts"] > 300:
                         log.critical("poll мёртв %.0fс, самоубийство для перезапуска", time.time() - POLL["ts"])
                         os._exit(7)
-                    # heartbeat раз в 60с: апп по нему знает, что бот жив и данные актуальны (штамп подарков меняется только при изменении)
-                    if time.time() - last_hb > 60 and repo.enabled:
+                    # heartbeat раз в 5 мин (6 запросов GitHub API на коммит: 60с ели 360/ч из лимита 1000)
+                    if time.time() - last_hb > 300 and repo.enabled:
                         last_hb = time.time()
                         asyncio.create_task(repo.commit_files(session, {
                             "data/heartbeat.json": json.dumps({"ts": int(last_hb), "poll_ts": int(POLL["ts"] or 0)}).encode()}, "bot: heartbeat"))

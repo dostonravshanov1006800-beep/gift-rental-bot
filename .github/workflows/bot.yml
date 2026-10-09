@@ -46,7 +46,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
           ADMIN_IDS: ${{ secrets.ADMIN_IDS }}
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || github.token }}   # PAT даёт 5000 req/h; пока его нет - дефолт 1000, расход снижен до ~85/h
           REPO: ${{ github.repository }}
           APP_SHORT_NAME: ${{ vars.APP_SHORT_NAME || 'gifts' }}
         run: python bot/main.py
