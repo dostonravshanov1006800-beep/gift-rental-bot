@@ -154,6 +154,14 @@ const gkey = (g) => (g.owner ? g.owner.uid : S.uid) + ":" + g.g;
  * data
  * ============================================================ */
 const RAW = "https://raw.githubusercontent.com/dostonravshanov1006800-beep/gift-rental-bot/main/";
+// Превью подарков: бот коммитит assets/gifts/*.webp из Actions, а такие коммиты НЕ деплоят Pages
+// (файл на Pages = 404 до следующего ручного деплоя). Поэтому первым идёт raw (живой коммит), Pages запасной.
+function thumbSrc(t) { return !t ? "" : /^https?:/.test(t) ? t : RAW + String(t).replace(/^\/?/, ""); }
+function thumbImg(t, cls) {
+  if (!t) return "";
+  const pages = String(t).replace(/^https?:\/\/[^/]+\/[^/]+\/[^/]+\/main\//, "");
+  return `<img ${cls ? `class="${cls}" ` : ""}src="${esc(thumbSrc(t))}" alt="" loading="lazy" onerror="if(this.dataset.f)this.remove();else{this.dataset.f=1;this.src='${esc(pages)}'}">`;
+}
 async function getJSON(path) {
   const bust = path + "?t=" + Date.now();
   // 1) живой коммит в репо: доступен через ~2с, без ожидания деплоя Pages
@@ -417,7 +425,7 @@ function card(g, i) {
     : `<div class="gprice dim">по договорённости</div>`;
   return `<div class="gcard" data-i="${i}">
     <div class="gcanvas" style="--c1:${c1};--c2:${c2}">
-      ${g.t ? `<img src="${esc(g.t)}" alt="" loading="lazy" onerror="this.remove()">` : `<span style="font-size:40px">🎁</span>`}
+      ${g.t ? thumbImg(g.t) : `<span style="font-size:40px">🎁</span>`}
       ${g.num != null ? `<div class="gnum">#${esc(g.num)}</div>` : ""}
       <button class="gheart ${fav ? "on" : ""}" data-fav="${i}" aria-label="В избранное"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.600-7 10-7 10z"/></svg></button>
     </div>
@@ -512,7 +520,7 @@ function openDetail(g) {
   const mktChip = mk && (mk.p || mk.avg) ? `<div class="dchip"><span>${t("f_mkt")}</span><b>≈ ${esc(mk.p || mk.avg)} ★</b></div>` : "";
   $("#sheet").innerHTML = `
     <div class="sheet-h"><span>${esc(g.dn || dname(g))}${g.num != null ? " #" + esc(g.num) : ""}</span><button class="sheet-x" id="x">×</button></div>
-    <div class="dcanvas" style="--c1:${c1};--c2:${c2}">${g.t ? `<img src="${esc(g.t)}" alt="" onerror="this.remove()">` : "🎁"}</div>
+    <div class="dcanvas" style="--c1:${c1};--c2:${c2}">${g.t ? thumbImg(g.t) : "🎁"}</div>
     <div class="dchips">${typeChip}${starsChip}${mktChip}${rows.map((r) => `<div class="dchip"><span>${r[0]}</span><b>${esc(r[1])}</b>${r[2] ? `<i>${pct(r[2])}</i>` : ""}</div>`).join("")}</div>
     <div class="dprice">${g.p ? `${esc(money(g.p))} ${esc(g.cur || "")} <small>/ ${esc(g.per || "")}</small>` : g.stars ? `${esc(g.stars)} <small>★ ${t("f_stars_p")}</small>` : `<small>${t("f_negotiable")}</small>`}</div>
     <div class="owner"><div class="oav">${esc((o.name || o.uname || "?").slice(0, 1).toUpperCase())}</div><div><b>${esc(o.name || t("f_owner"))}</b><span>${o.uname ? "@" + esc(o.uname) : "ID " + esc(o.uid)}</span></div></div>
