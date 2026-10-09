@@ -15,7 +15,23 @@
    "client_first": "Достонхожа",
    "ts": 1791488297,
    "status": "done"
+  },
+  {
+   "id": "2",
+   "coid": "8396883978-mv0cqzo1svlu",
+   "gid": "5170250947678437525",
+   "name": "🎁",
+   "num": null,
+   "price": "3000",
+   "cur": "UZS",
+   "per": "день",
+   "comment": "1",
+   "client_uid": 8396883978,
+   "client_username": "dostonxoja",
+   "client_first": "Достонхожа",
+   "ts": 1791514348,
+   "status": "new"
   }
  ],
- "seq": 1
+ "seq": 2
 }
