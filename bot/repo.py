@@ -111,23 +111,34 @@ class Repo:
         self._waiters.append(fut)
         if self._flusher is None or self._flusher.done():
             self._flusher = asyncio.create_task(self._flush(session))
-        return await fut
+        try:
+            return await asyncio.wait_for(fut, timeout=150)
+        except asyncio.TimeoutError:
+            log.error("commit_files: коммит не завершился за 150с, отдаём сбой")
+            return False
 
     async def _flush(self, session):
-        await asyncio.sleep(1.2)  # окно коалесценции
         files, waiters, msgs = self._pending, self._waiters, self._msgs
         self._pending, self._waiters, self._msgs = {}, [], []
         ok = False
-        for attempt in range(5):
-            ok = await self._commit_once(session, files, "; ".join(dict.fromkeys(msgs))[:200])
-            if ok:
-                break
-            await asyncio.sleep(0.4 * (attempt + 1))
-        for w in waiters:
-            if not w.done():
-                w.set_result(ok)
-        if self._pending:  # пока коммитили, пришли новые
-            self._flusher = asyncio.create_task(self._flush(session))
+        try:
+            await asyncio.sleep(1.2)  # окно коалесценции
+            for attempt in range(5):
+                try:
+                    ok = await self._commit_once(session, files, "; ".join(dict.fromkeys(msgs))[:200])
+                except Exception:
+                    # крах коммита НЕ должен вешать waiter'ов: ловим, ретрай, в конце честно вернём False
+                    log.exception("коммит упал (попытка %d)", attempt + 1)
+                    ok = False
+                if ok:
+                    break
+                await asyncio.sleep(0.4 * (attempt + 1))
+        finally:
+            for w in waiters:
+                if not w.done():
+                    w.set_result(ok)
+            if self._pending:  # пока коммитили, пришли новые
+                self._flusher = asyncio.create_task(self._flush(session))
 
     async def _commit_once(self, session, files: dict, message: str) -> bool:
         try:
